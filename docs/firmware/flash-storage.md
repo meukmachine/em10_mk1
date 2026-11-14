@@ -80,3 +80,18 @@ RAM pointers `0x6044cbc4`+.
   per-call status) is not yet confirmed — `read before writing` suggests pre-write checks exist, but a
   full post-write image verify was not located.
 - SPI serial-flash contents (boot/cal) not mapped; no raw flash dump available (non-invasive only).
+
+## Dump strategy — key open question (2026-11-15)
+The reset head reads the boot region with a **plain memcpy** whose source is a flash address in the
+`0x40000000`–`0x48000000` window (the 'outside' copy: `memcpy(a1=RAM, a0=flash 0x40060000, d0=0x40000)`;
+the code block itself loads from `0x40300000` the same way). So that flash window is **CPU-addressable
+(memory-mapped) at boot** — a dumper would not necessarily need the NAND/BML MMIO sequence; it could
+`memcpy` straight from `0x40060000`.
+- **Unknown:** whether the `0x40xxxxxx` flash window stays mapped/readable **at runtime**, or is only a
+  cold-boot shadow that the SoC remaps once the OS is up. This decides the whole dumper design.
+- **OM-Emu cannot answer it** — it does not model the flash window as a live runtime region (it resolves
+  the reset head's flash reads at fact-build time only).
+- **Two ways to resolve:** (a) static — look in block 0 for any *runtime* (non-reset-head) code that
+  reads an address in `0x40000000`–`0x48000000` as a data source; if the running OS ever does, the
+  window is live. (b) runtime — a one-off read of a few bytes at `0x40060000` on the camera (user-only,
+  camera-state change) would confirm it directly and non-destructively.
