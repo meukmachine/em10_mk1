@@ -36,3 +36,6 @@ resize*_*.jpg
 app/resize*_*.jpg
 thumb_*.jpg
 app/thumb_*.jpg
+
+# Third-party emulator clone (om-emu) + fetched Olympus firmware + E113 port work — never commit
+research/om-emu-src/

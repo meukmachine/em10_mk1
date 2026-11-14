@@ -48,34 +48,48 @@ a debug interface (registers, memory, breakpoints, traces).
 - Now carries an **MIT licence** (it had none on the 2026-11-02 look), so its code could be reused with
   attribution — but we have not needed to.
 
-Why it mattered: it looked like the missing piece for testing a patch without the camera. But see the
-port attempt below — the E-M10 Mark I is below its supported generation.
+Why it mattered: it looked like the missing piece for testing a patch without the camera. A partial
+port now exists — see below. The address map is done; the device-fact layer is not.
 
-### E113 port attempt — 2026-11-15 (does not work without emulator-engine changes)
+### E113 port — 2026-11-15 (address map ported; device facts pending)
 Cloned to gitignored `research/om-emu-src/`, ran on a locally-installed Node 26 (system Node is 18).
-Baseline is healthy: `node emu/bin/test-pure.mjs` passes (CPU vs QEMU vectors, device models, 255/255
-purity). Steps taken:
-- Unpacked our stock E113 BIN with the emulator's own unpacker (`src/fw/olyfw.mjs labBlocks`): main
-  code block `0x0100` (load `0x40300000`, 18,874,304 B), resources `0x0101` (`blk01200000.OE.0101.bin`,
-  25,165,760 B), plus a third `0x0106` block. Wrote them to `unpacked/E113/`.
-- Added a minimal `E113` entry to `emu/src/fw/models.mjs` (board family `E118` — its SRAM base
-  `0x8FF00000` matches ours; `image_base 0x7d991020`; panels 720×480 / 800×600). E113 is now accepted
-  by `emu/bin/port.mjs`.
-- Fetched the E143 (OM-1) reference firmware (the whole cross-build map is built from it).
-- `node emu/bin/port.mjs E113` runs and **stops at the first of ~59 board-fact rules**: `coreByte`
-  scans the image for the core-id getter encoded `fc a8 <abs32 in 0x8ff00000..+0x1000> de 00 00`
-  (`movbu (abs32),d0; retf`) and finds **zero**. In our disassembly `0x8ff00000`/`0x8ff00004` never
-  appear as an immediate at all: E113's 2014 toolchain reaches that SRAM through a **register-held
-  base**, where the 2015-2022 bodies the rules were written for use **abs32 immediates**.
+Baseline is healthy: `node emu/bin/test-pure.mjs` passes 255/255 purity (CPU vs QEMU vectors, device
+models) with the E113 table in place — no regression.
 
-Conclusion: porting E113 is not "fill a model table" (as E120 was, ~6 overrides via `port_via: E122`).
-E113 predates all three board families (E143/E144/E118 are 2015-2022) and has no `port_via` sibling,
-and its codegen does not match the fact-extraction rules. A port would mean **extending the emulator's
-own fact engine** (59 rules) to E113's encodings, then absorbing a large address-map override list
-across the 8-year gap from E143 — an emulator-development project of many sessions, success uncertain.
-And even a finished port could not validate a real flash-to-SD dump, because the NAND and card are
-stand-ins. Scaffolding (unpacked blocks, the `E113` MODELS entry) is left in `research/om-emu-src/` for
-any future attempt.
+A port has **two separable parts**, which the first look conflated:
+1. the **cross-build address map** — translating the OM-1 (E143) reference build's addresses to E113's,
+   built purely by matching code, no device knowledge; and
+2. the **~50 board-fact rules** — byte-pattern scans that read device facts (core-id getter, panel,
+   lens mount, card FS, resource loader…) out of the image.
+
+**Part 1 is done.** First the map was measured against a known-good port to see if the two builds pair
+at all. They do — E113's raw E143→E113 map is in the *same league* as E120, a fully-ported body that
+passes modelcheck:
+
+| E143 → target map | instructions paired | seed anchor rate |
+|---|---|---|
+| **E120** (known-good port) | 770,332 (2.8%) | 29.5% |
+| **E113** (our target) | 890,871 (3.2%) | 24.0% |
+
+So the earlier "below the supported generation" verdict was wrong at the map level. A generator
+(`research/om-emu-src/e113-port/portlite.mjs`) then materialised the map as E113's `PORTS` table and
+wrote it into `emu/src/fw/ports.mjs`: **2,169 entries (1,031 translated to a real E113 address, 1,138
+explicit nulls); 536 of the 731 `A()` address-reference sites the emulator source actually uses now
+resolve — 73.3%.** `A()` is live and consuming the table (e.g. the resource loader resolves concrete
+E113 addresses).
+
+**Part 2 is not done.** `node emu/bin/port.mjs E113` / modelcheck still fail on 9 device facts, every
+one tracing to a single root: the first rule `coreByte` scans for the core-id getter encoded
+`fc a8 <abs32 in 0x8ff00000..+0x1000> de 00 00` (`movbu (abs32),d0; retf`) and finds **zero** — E113's
+2014 toolchain reaches that SRAM through a **register-held base**, not the abs32 immediates the
+2015-2022 rules expect. The remaining facts (card FS, resource-loader geometry, panel, lens, touch,
+prop-store, menu) are downstream of it. Teaching the fact engine E113's 2014 encodings is the next
+block of work — additive, well-characterised (one root cause), no longer a "generation floor".
+
+Scope note: even a finished port **cannot validate a real flash-to-SD dump** — the emulator's NAND and
+card are stand-ins. Its value here is tracing a patch's hook/read/write *logic*, not the dump itself.
+The generated table, the generator, the calibration diagnostic (`mapdiag.mjs`) and a pre-port backup of
+`ports.mjs` are kept in gitignored `research/om-emu-src/e113-port/`.
 
 ## omcap — `github.com/HolmHaensel/omcap` (GPL-3)
 Wi-Fi and USB tethering for the E-M1 Mark I. Covered in `../usb-protocol/wifi-api.md`.
