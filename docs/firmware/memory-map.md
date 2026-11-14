@@ -55,16 +55,33 @@ bss unless noted. VERIFIED = read/written by disassembled code this session.
 | 0x41b0014 / 0x41b0015 | takemode set / desc |
 | 0x41b0024…0x41b0029 | exec_shutter release sub-events (1stpush … 2nd1strelease) |
 
-### Mask-ROM helper region 0x4700xxxx
+### Boot-copied helper region 0x4700xxxx (NOT mask ROM — in our firmware file)
 Calls into `0x47001xxx` recur as library primitives, used by every response builder. **Corrected
 by call-site arg analysis** (prior note called both "byte-copy" — only one is):
 - `0x47001000` = **memcpy**(dst=`a0`, src=`a1`, len=`d0`) — 1394 xrefs.
 - `0x4700110c` = **memset**(dst=`a0`, val=`d0`, len=`d1`) — 3612 xrefs (call sites pass a fill
   value `0`/`0xff`/`255` in `d0`, not a source pointer, so it is memset not memcpy).
 
-This region is **below** the block-0 image (which starts at runtime 0x7d991020) and is not in the
-dump — it is the SoC **mask/boot ROM**. Not disassemblable from our material (dead end: no ROM
-image; body never opened) — but the two primitives' signatures are pinned from their call sites.
+**Correction 2026-11-15 — this is NOT mask ROM; it is copied into place at boot from the firmware
+file we already hold.** The prior "dead end: no ROM image" was wrong. E113's reset head copies a
+`0x1000`-byte page to the `0x47000000` window at startup. Verified from E113's own boot head with the
+OM-Emu reset-head parser (`resetHead`, cross-checked against the E118/E120/E122 facts, which do the
+identical copy):
+- library window `base 0x47000000, size 0x2000`; the primitives' page `image = [file 0x10497e0,
+  len 0x1000, at 0x1000]` → runtime **`0x47001000`** is copied from **file offset `0x10497e0`** of
+  code block `0x0100` (`…blk00000000.OE.0100.bin`, flash source `0x41349800`).
+- Those 4096 bytes were extracted at that offset and decode as MN10300/AM33 code (store/branch copy
+  idiom), not padding. So **both primitives are in our dump and are disassemblable** — point
+  `mn10300-elf-objdump` at that file offset (runtime vma `0x47001000`). This removes the
+  `0x4700xxxx` library from the list of things the bootloader-dump goal must recover.
+
+### Boot region genuinely NOT in the update file (dump target)
+The same reset-head walk finds one copy the emulator marks **`outside`**: `flash 0x40060000 →
+0x7ff8a000, len 0x40000` (256 KiB). Its source `0x40060000` lies **below** the code block's flash
+base (`0x40300020`), so **no shipped `.BIN` block holds it** — the E118/E120/E122 bodies have the
+same `0x40060000` outside-copy. This 256 KiB at flash `0x40060000` is exactly the pre-boot/first-stage
+content the bootloader-dump goal needs to read off the live flash: known flash address, known size,
+not in any firmware file we have.
 
 ## Subsystems by log tag (`tools/subsystems.py`)
 GUI, APPEVENT_STATE/CAMST/CAMON/PWR/TIMER (camera state machine), iseq_ps_* (image sequencer: still/through/recview/update/mng), exp (exposure), api_* (layered API: disp, rec, play, picfile, dps, network_Wifi, histogram, tft, oldb, adj, cube), rec_ImgPro*, RecView, CapThr, Cap_PlayMovie, movplay_com, app_panorama, app_background, GuiTouch, DevBlu_Bluetooth, WIFI_REMOCON_CGI/UTL, WIFI_RELEASE, do_cgi_get, AVM_FILE_MAIN/AVM_API, API_MEDIA(_SD), aud_dev_wm8946 (audio codec), PER_ADCONV, FLASH.
