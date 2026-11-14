@@ -15,8 +15,9 @@ private const val USAGE = """em10 - firmware helper for the Olympus OM-D E-M10 M
   em10 download [DIR]           download the latest firmware into DIR (default: .) and verify it
   em10 verify FILE              verify a firmware file (structure, checksums, model)
   em10 card FILE CARD_ROOT      verify FILE and copy it to CARD_ROOT/DCOLYMP/E1139999.BIN
+  em10 cam ...                  the camera's Wi-Fi interface; `em10 cam` lists its commands
 
-Nothing here talks to the camera. `card` only writes a file to a memory card; the camera installs
+The firmware commands do not talk to the camera. `card` only writes a file to a memory card; the camera installs
 it itself when it is started with that card and the update is confirmed on the camera.
 """
 
@@ -27,6 +28,7 @@ fun main(args: Array<String>) {
             "download" -> download(File(args.getOrElse(1) { "." }))
             "verify" -> if (args.size == 2) verify(File(args[1])) else usage()
             "card" -> if (args.size == 3) card(File(args[1]), File(args[2])) else usage()
+            "cam" -> cameraCommand(args.drop(1))
             else -> usage()
         }
     } catch (e: Exception) {
@@ -35,8 +37,8 @@ fun main(args: Array<String>) {
     }
 }
 
-private fun usage(): Nothing {
-    print(USAGE)
+fun usage(text: String = USAGE): Nothing {
+    print(text)
     exitProcess(2)
 }
 

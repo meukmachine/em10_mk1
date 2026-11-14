@@ -23,19 +23,22 @@ firmware is flashed. Every **flash** item is therefore parked as an idea; its re
 2. **C3, C5** — live run of the state-changing commands, then "save to computer after each shot".
 3. **A8** — show the installed firmware version, so the update flow can say "you are up to date".
 4. **C8** — a live-view window; it unlocks most of the tethering features.
-5. **A1** — move the Wi-Fi client into the app's shared code once C1–C3 have confirmed the protocol.
+5. **A1** — move the Wi-Fi client into the app's shared code: started 2026-11-14, C5 is built there.
 6. ~~M0~~ — done 2026-11-14: no switched-off Wi-Fi features (`mods/wifi-feature-gap.md`). **M12**:
    see whether the emulator can run this firmware; that decides how testable any modification idea is.
 7. **A3, A4** — the two big user-facing screens: import and remote control.
 
-## Wi-Fi client (`tools/emcam.py`)
+## Wi-Fi client
+
+From 2026-11-14 new client features are built in the Kotlin app (`app/`, package `em10.camera`);
+`tools/emcam.py` stays as the test tool for runs at the camera (`probe`, `livetest`) and gets no new features.
 
 | Id | P | Issue | Value | Effort | Risk | Depends | Status |
 |---|---|---|---|---|---|---|---|
 | C1 | 1 | Live test of the read-only commands on the E-M10: `info`, `ls -r`, `get`, `thumb`, `resize`, `pull` | high | S | read | camera on Wi-Fi | done 2026-11-12 (probe, 16/16) |
 | C2 | 3 | Capture the real `get_unusedcapacity` reply and parse it (done: `<unused>N</unused>`, saturates at 4294967295). Left: see a value below 4 GB to confirm the unit | low | S | read | C1 | open |
 | C3 | 1 | Live test of `mode`, `props`, `prop`, `set`, `shoot`, `liveview` | high | S | state | – | done 2026-11-14: two `livetest` runs on the camera; rec mode, properties, live view, set, shot and the card comparison all work (`wifi-api.md`). A missing new file in the first run did not reproduce |
-| C5 | 1 | Save to computer after each shot (`exec_takemisc` `getlastjpg` / `getrecview`) | high | S | state | C3 | open, to be built in the Kotlin client (A1), not in `emcam.py`. `getlastjpg` returns exactly the new full-size JPEG (8 MB in about 28 s); OI.Share shows a review image (`getrecview`) and downloads the full JPEG only on Save (`wifi-api.md`); the camera waits up to 15 s for a review image, so a client timeout must be longer |
+| C5 | 1 | Save to computer after each shot (`exec_takemisc` `getlastjpg` / `getrecview`) | high | S | state | C3 | built 2026-11-14 in the Kotlin client (`Tethering`, `em10 cam shoot --save DIR [--raw]`): thumbnail first, then the full JPEG, optionally the RAW; not yet run on the camera. `getlastjpg` returns exactly the new full-size JPEG (8 MB in about 28 s); OI.Share shows a review image (`getrecview`) and downloads the full JPEG only on Save (`wifi-api.md`); the camera waits up to 15 s for a review image, so a client timeout must be longer |
 | C8 | 2 | Live-view window instead of saving frames (local web page served by the client) | high | M | state | C3 | open |
 | C4 | 2 | Touch autofocus: `focus X Y` using `assignafframe` / `takeready`, report focus ok and frame position | med | S | state | C3 | open |
 | C18 | 2 | Join the camera's Wi-Fi and return to the home network from the client (today a separate shell script) | med | S | none | – | open |
@@ -62,7 +65,7 @@ firmware is flashed. Every **flash** item is therefore parked as an idea; its re
 |---|---|---|---|---|---|---|---|
 | A0 | – | Milestone 1: query the update server, download, verify, copy the official file to a card (command line) | high | M | none | – | done |
 | A8 | 1 | Show the installed firmware version: read it from the EXIF of any picture (downloaded over Wi-Fi or from a card), compare with the server | high | S | read | – | open |
-| A1 | 2 | Wi-Fi camera client in the shared core, behind the transport interface; port of `emcam.py` | high | M | none | C1, C3 | blocked |
+| A1 | 1 | Wi-Fi camera client in the shared core, behind the transport interface; port of `emcam.py` | high | M | none | C1, C3 | in progress: `em10.camera` (commonMain) with info, listing, download, thumbnails, modes, properties, lens check, shutter and C5; `em10 cam` on the JVM; tested against a fake camera and `emcam_mock.py`. Left: live view (UDP), resize, a run on the camera |
 | A9 | 2 | Find mounted memory cards, check free space and file system before writing the update file | med | M | none | – | open |
 | A2 | 2 | Desktop window for the firmware flow (check, download, verify, write to card, on-camera steps) | med | M | none | A8, A9 | open |
 | A3 | 2 | Import screen: thumbnail grid, select or "all new", download with progress | high | L | read | A1 | blocked |
