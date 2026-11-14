@@ -78,18 +78,56 @@ explicit nulls); 536 of the 731 `A()` address-reference sites the emulator sourc
 resolve — 73.3%.** `A()` is live and consuming the table (e.g. the resource loader resolves concrete
 E113 addresses).
 
-**Part 2 is not done.** `node emu/bin/port.mjs E113` / modelcheck still fail on 9 device facts, every
-one tracing to a single root: the first rule `coreByte` scans for the core-id getter encoded
-`fc a8 <abs32 in 0x8ff00000..+0x1000> de 00 00` (`movbu (abs32),d0; retf`) and finds **zero** — E113's
-2014 toolchain reaches that SRAM through a **register-held base**, not the abs32 immediates the
-2015-2022 rules expect. The remaining facts (card FS, resource-loader geometry, panel, lens, touch,
-prop-store, menu) are downstream of it. Teaching the fact engine E113's 2014 encodings is the next
-block of work — additive, well-characterised (one root cause), no longer a "generation floor".
+**Part 2 — fact rules now fixed; a deeper engine wall remains (2026-11-15, corrected).** The earlier
+"9 device facts fail / `coreByte` finds zero because 2014 codegen uses a register-held base" writeup was
+**wrong on both counts** and is retracted:
+
+- **E113 does use abs32 SRAM immediates** (`fc a8 …`), the same encoding the rules expect. It simply
+  **inlines the core-id read** rather than wrapping it in a `movbu (abs32),d0; retf` getter function, so
+  `coreByte`'s getter scan finds no *getter* — not because the immediate form is absent.
+- **Only 2 of ~50 rules actually fail, not 9.** `readFacts` (facts.mjs:5645) is monolithic — one rule
+  throwing aborts the whole function — so `coreByte`'s single throw *looked* like a cascade of failures.
+  The two genuinely-affected rules are `coreByte` and `dcfCounts`; every other rule reads E113 cleanly.
+- **`dcfCounts` is solved: E113 = `0xa0a8eef0`.** E113 inlines the DCF-count getter too, so the full
+  `fc c0 <abs32> f1 e0 f8 00 28` pattern finds nothing. Added a constrained-tail fallback (match the
+  `add T,d0; mov d0,a0; mov (40,a0),d0` tail with the abs32 high byte pinned to the DCF-count RAM window
+  `0xa0..0xa3`) → unique and correct on E113, **zero regression** on the 18 working bodies (it only runs
+  when the full pattern finds nothing). E143 → `0xa33aa5b4`, unchanged.
+- **`coreByte` is made to defer honestly, not guessed.** It now returns `null` on zero getters (the
+  engine-idiomatic UNKNOWN deferral) instead of throwing, and `readFacts` omits `core_byte` from
+  `facts.board` when null, so the board layer can supply it by hand/family without a merge conflict. The
+  **actual E113 core-id value is left unpinned** — the sibling E118/E120/E122 value `0x8ff00188` does
+  **not** transfer (E113's image reads that address zero times), and inventing one would violate the
+  no-fabrication rule. Pinning it needs deeper scheduler RE.
+
+With those two edits `readFacts` completes end-to-end on E113 (31 top-level fact keys) with no
+regression on E120 (34 keys, `core_byte=0x8ff00188`) or E143.
+
+**The real blocker is architectural, below the fact layer: E113 runs its main code in place from a high
+window, which OM-Emu's memory model does not represent.** OM-Emu assumes the run-time code image is
+**relocated into DRAM**: `createMachine` (machine.mjs:205) hard-asserts `IMAGE_BASE` lies in
+`0x60000000 .. 0x60000000+dramBytes`, and `expandImage`/`relocate` (expand.mjs:38) builds **one flat
+buffer growing upward from `base`**, placing each preload row at `to - base`.
+
+- E143/E120 satisfy this — their code base is `0x60021020` and their preload/DRAM data sits just above
+  it (E120 data at `0x61xxxxxx`), all inside the one window.
+- **E113 does not.** Its verified code base is `0x7d991020` (reset entry `0x7d991114`; 2315/3000 string
+  pointers resolve against it), but its preload DRAM destinations are `0x60000fe0`, `0x6044a140`,
+  `0x6047e140`, `0x60486140` and its boot-copied library window is `0x47000000` — all **far below** the
+  code base. `to - base` goes negative → `RangeError` in `relocate`, and `IMAGE_BASE` fails the DRAM
+  bounds assert. Both symptoms are the same root fact: **E113 (a 2014 body) executes code in place from
+  `0x7d99xxxx`; the newer bodies OM-Emu supports relocate code down into `0x60xxxxxx` DRAM.**
+
+So the honest state of Goal #2: **the fact-rule layer is fixed and verified, but E113 cannot actually
+run in OM-Emu without a sparse / multi-region memory model** (code high at `0x7d99xxxx`, data low at
+`0x6000xxxx`/`0x4700xxxx`). That is a substantial engine change, not a port-table gap — and it is why
+E113 was shipped as "surveyed, not tried." We did **not** fabricate a passing modelcheck.
 
 Scope note: even a finished port **cannot validate a real flash-to-SD dump** — the emulator's NAND and
 card are stand-ins. Its value here is tracing a patch's hook/read/write *logic*, not the dump itself.
-The generated table, the generator, the calibration diagnostic (`mapdiag.mjs`) and a pre-port backup of
-`ports.mjs` are kept in gitignored `research/om-emu-src/e113-port/`.
+The fixed `facts.mjs` (vendored, gitignored copy), the generated table, the generator, the calibration
+diagnostic (`mapdiag.mjs`) and a pre-port backup of `ports.mjs` are kept in gitignored
+`research/om-emu-src/`.
 
 ## omcap — `github.com/HolmHaensel/omcap` (GPL-3)
 Wi-Fi and USB tethering for the E-M1 Mark I. Covered in `../usb-protocol/wifi-api.md`.
