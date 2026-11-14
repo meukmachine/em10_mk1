@@ -32,3 +32,7 @@ app/shot/
 shot/
 app/lv/
 lv/
+resize*_*.jpg
+app/resize*_*.jpg
+thumb_*.jpg
+app/thumb_*.jpg
