@@ -77,6 +77,7 @@ fun App() {
 
     fun shoot() {
         if (busy) return
+        val resume = live != null       // shutter mode ends the live-view stream; bring it back after
         stopLive()
         busy = true
         status = "shooting…"
@@ -85,6 +86,7 @@ fun App() {
                 .onSuccess { status = "picture taken (on the card)" }
                 .onFailure { status = "shoot error: ${it.message}" }
             busy = false
+            if (resume) startLive()
         }.apply { isDaemon = true }.start()
     }
 
