@@ -39,7 +39,7 @@ From 2026-11-14 new client features are built in the Kotlin app (`app/`, package
 | C2 | 3 | Capture the real `get_unusedcapacity` reply and parse it (done: `<unused>N</unused>`, saturates at 4294967295). Left: see a value below 4 GB to confirm the unit | low | S | read | C1 | open |
 | C3 | 1 | Live test of `mode`, `props`, `prop`, `set`, `shoot`, `liveview` | high | S | state | – | done 2026-11-14: two `livetest` runs on the camera; rec mode, properties, live view, set, shot and the card comparison all work (`wifi-api.md`). A missing new file in the first run did not reproduce |
 | C5 | 1 | Save to computer after each shot (`exec_takemisc` `getlastjpg` / `getrecview`) | high | S | state | C3 | done 2026-11-14: first live run of the Kotlin client (`em10 cam shoot --save shot --raw`) saved the thumbnail, full JPEG and ORF. Findings (`wifi-api.md`): the ORF is served in **rec mode** (no play-mode fallback needed); `getlastjpg` returns only the **newest** frame, byte-exact to the card. A burst (sequential drive) left two frames and exposed a client bug — it matched the thumbnail/name against the *first* new file while `getlastjpg` serves the *newest* — now fixed in `Tethering` (align to the newest frame, note multi-frame shots). Saving *all* burst frames is a follow-up (see C24) |
-| C8 | 2 | Live-view window instead of saving frames (local web page served by the client) | high | M | state | C3 | open |
+| C8 | 2 | Live-view window instead of saving frames | high | M | state | C3 | mostly done 2026-11-14 via the desktop GUI (A4): the Compose window paints the UDP live-view feed in real time (no web page needed) |
 | C4 | 2 | Touch autofocus: `focus X Y` using `assignafframe` / `takeready`, report focus ok and frame position | med | S | state | C3 | open |
 | C18 | 2 | Join the camera's Wi-Fi and return to the home network from the client (today a separate shell script) | med | S | none | – | open |
 | C6 | 2 | Time lapse: N shots at an interval, each saved to the computer | med | S | state | C5 | open |
@@ -70,7 +70,7 @@ From 2026-11-14 new client features are built in the Kotlin app (`app/`, package
 | A9 | 2 | Find mounted memory cards, check free space and file system before writing the update file | med | M | none | – | open |
 | A2 | 2 | Desktop window for the firmware flow (check, download, verify, write to card, on-camera steps) | med | M | none | A8, A9 | open |
 | A3 | 2 | Import screen: thumbnail grid, select or "all new", download with progress | high | L | read | A1 | blocked |
-| A4 | 2 | Remote-control screen: live view, settings panel, shutter, touch AF | high | L | state | A1, C8 | blocked |
+| A4 | 2 | Remote-control screen: live view, settings panel, shutter, touch AF | high | L | state | A1 | in progress: first desktop window (Compose Multiplatform 1.12.1, `em10.gui`), live-view feed + shutter button on the headless `em10.camera` client; `./gradlew run` or the "em10 GUI" run config. Left: settings panel, touch AF |
 | A10 | 3 | Build on Java 21–25 as well as 27, continuous build, installable packages | low | M | none | – | open |
 | A5 | 3 | Android target (needs the Android SDK installed) | med | L | none | A1 | blocked |
 | A7 | 3 | USB transport for import and device info (standard PTP/MTP). Camera control over USB is limited on this body to its own 18 vendor operations | med | L | read | – | open |

@@ -1,5 +1,7 @@
 plugins {
     kotlin("multiplatform") version "2.4.20"
+    id("org.jetbrains.kotlin.plugin.compose") version "2.4.20"
+    id("org.jetbrains.compose") version "1.12.1"
 }
 
 group = "em10"
@@ -14,9 +16,20 @@ kotlin {
         }
     }
     sourceSets {
+        jvmMain.dependencies {
+            // The desktop GUI (em10.gui); the CLI and the shared core stay Compose-free.
+            implementation(compose.desktop.currentOs)
+        }
         commonTest.dependencies {
             implementation(kotlin("test"))
         }
+    }
+}
+
+// `./gradlew run` opens the desktop GUI; the CLI stays on `runJvm`.
+compose.desktop {
+    application {
+        mainClass = "em10.gui.MainKt"
     }
 }
 
