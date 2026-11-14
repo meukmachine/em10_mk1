@@ -1,5 +1,6 @@
 package em10.cli
 
+import em10.camera.CameraException
 import em10.camera.ChunkSink
 import em10.camera.FolderPictureStore
 import em10.camera.JvmCameraHttp
@@ -82,12 +83,17 @@ private fun info(camera: WifiCamera) {
     println("model        : ${camera.model()}")
     println("free space   : " + runCatching { camera.freeBytes() }.fold(
         { it?.let { b -> "%.1f MB".format(b / 1e6) } ?: "4 GB or more (the camera's counter stops at 4294967295 bytes)" },
-        { "(${it.message})" }))
-    println("pictures     : " + runCatching { camera.pictureCount() }.fold({ "$it" }, { "(${it.message})" }))
+        { modeRestricted(it) }))
+    println("pictures     : " + runCatching { camera.pictureCount() }.fold({ "$it" }, { modeRestricted(it) }))
     val commands = camera.commandList()
     println("api version  : ${commands.version}")
     println("commands     : ${commands.commands.sorted().joinToString(" ")}")
 }
+
+/** Free space and picture count come only in play mode; soften the wrong-mode refusal (error 1001). */
+private fun modeRestricted(e: Throwable): String =
+    if (e is CameraException && e.wrongMode) "play mode only (the camera is not in play mode)"
+    else "(${e.message})"
 
 private fun shoot(camera: WifiCamera, rest: MutableList<String>) {
     val focusWait = option(rest, "--focus-wait")?.toLongOrNull() ?: 2000
