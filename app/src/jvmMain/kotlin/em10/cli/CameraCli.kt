@@ -25,9 +25,10 @@ Read-only:
 Changing the camera's state:
   em10 cam mode play|rec|shutter [--lv 0320x0240|0640x0480]
   em10 cam set NAME VALUE       set a property (rec mode)
-  em10 cam shoot [--save DIR] [--raw] [--no-full] [--focus-wait MS]
+  em10 cam shoot [--save DIR] [--raw] [--no-full] [--focus-wait MS] [--control]
                                 take one picture; --save finds it on the card and saves the thumbnail,
-                                then the full JPEG (about 28 s over Wi-Fi), with --raw also the ORF
+                                then the full JPEG (about 28 s over Wi-Fi), with --raw also the ORF;
+                                --control shoots in rec mode (starttake), leaving live view running
   em10 cam liveview [--save DIR] [--large] [--frames N]
                                 stream live view over UDP; --save writes each frame as a JPEG,
                                 --large uses 640x480 (default 320x240), stop with Ctrl-C
@@ -113,7 +114,16 @@ private fun modeRestricted(e: Throwable): String =
 
 private fun shoot(camera: WifiCamera, rest: MutableList<String>) {
     val focusWait = option(rest, "--focus-wait")?.toLongOrNull() ?: 2000
+    val control = rest.remove("--control")
     val saveDir = option(rest, "--save")
+    if (control) {
+        // The rec-mode path (takeready/starttake/stoptake) that keeps live view running. Start live
+        // view in another window (or cam liveview) first to see that it survives the shot.
+        camera.setMode(WifiCamera.Mode.REC)
+        camera.captureInRec(focusWait, driveMode = "normal")
+        println("picture taken via starttake; the camera stayed in rec mode")
+        return
+    }
     if (saveDir == null) {
         camera.shoot(focusWait)
         println("picture taken; the camera is back in rec mode")

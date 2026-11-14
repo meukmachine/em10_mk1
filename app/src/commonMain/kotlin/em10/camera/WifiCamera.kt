@@ -171,6 +171,30 @@ class WifiCamera(
     }
 
     /**
+     * Take one picture **without leaving rec mode**, the way OI.Share's control (live-view) mode does:
+     * arm/focus with `takeready`, then `starttake` and `stoptake` over `exec_takemotion`. Unlike
+     * [shoot] (which goes through shutter mode and so kills the live-view stream), this keeps live view
+     * running. The camera must already be in rec mode.
+     *
+     * [driveMode] is set first when given ("normal" for a single frame). [point] "XXXXxYYYY" sets the
+     * AF target before the shot (touch AF). [exposureMs] is how long to hold the take between start and
+     * stop — short for a normal exposure; a long hold is how bulb / live-time would work.
+     *
+     * UNVERIFIED on the E-M10: the exact timing and whether `point` belongs on `starttake` as well as
+     * `takeready` may need adjusting after a live test (firmware phase machine `exec_takemotion.cgi`,
+     * docs/firmware/wifi-cgi.md).
+     */
+    fun captureInRec(focusWaitMs: Long = 2000, exposureMs: Long = 500, point: String? = null, driveMode: String? = null) {
+        if (driveMode != null) setProperty("drivemode", driveMode)
+        val pt = point?.let { "&point=$it" } ?: ""
+        request("exec_takemotion.cgi?com=takeready$pt")
+        pause(focusWaitMs)
+        request("exec_takemotion.cgi?com=starttake$pt")
+        pause(exposureMs)
+        request("exec_takemotion.cgi?com=stoptake")
+    }
+
+    /**
      * The full-size JPEG of the last shot (rec mode). About 8 MB, so about 28 s over Wi-Fi; there is no
      * faster way to the full picture. Returns the number of bytes.
      */

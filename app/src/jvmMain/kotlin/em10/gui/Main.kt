@@ -77,16 +77,19 @@ fun App() {
 
     fun shoot() {
         if (busy) return
-        val resume = live != null       // shutter mode ends the live-view stream; bring it back after
-        stopLive()
+        val wasLive = live != null
         busy = true
         status = "shooting…"
         Thread {
-            runCatching { camera.shoot(driveMode = "normal") }   // single shot, whatever the camera's drive mode
+            runCatching {
+                // With live view up, shoot in rec mode (takeready/starttake/stoptake) so the stream
+                // keeps running, like OI.Share's control mode. Otherwise use the shutter-mode path.
+                if (wasLive) camera.captureInRec(driveMode = "normal")
+                else camera.shoot(driveMode = "normal")
+            }
                 .onSuccess { status = "picture taken (on the card)" }
                 .onFailure { status = "shoot error: ${it.message}" }
             busy = false
-            if (resume) startLive()
         }.apply { isDaemon = true }.start()
     }
 
