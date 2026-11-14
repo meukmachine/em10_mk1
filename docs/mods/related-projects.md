@@ -36,20 +36,46 @@ The original project: firmware mods for the PEN E-P7 (film simulations, HSL, gra
 video, extra aspect ratios). Not examined in detail yet. Closer in age to the E-M10 than the OM-3 is, so
 its porting notes may be the better starting point.
 
-## OM-Emu — `github.com/flatpanda/om-emu` (no licence file seen)
+## OM-Emu — `github.com/flatpanda/om-emu` (**MIT licence**, 2026-11-14)
 An emulator "lab" in JavaScript (Node 26 or a browser) that runs Olympus / OM System MN10300 firmware
 outside the camera: it emulates the CPU and the devices the user interface needs, runs the firmware's own
 kernel, GUI and camera application, and shows the camera's screens. It does not boot from reset, and the
 sensor, autofocus, release and movie modules are stand-ins. It can apply a patch overlay in memory, and has
 a debug interface (registers, memory, breakpoints, traces).
 
-- Reference body OM-1; ports for about 20 others, including the **E-M10 II, III and IV** and the E-M5 II.
-- **The original E-M10 is listed among "14 older bodies … surveyed, not tried"** (as of 2026-11-02).
-- No licence is stated, so its code cannot be reused here, but it can be used as a tool.
+- Reference body OM-1 (E143); ports for about 20 others, including the **E-M10 II (E120), III and IV** and the E-M5 II.
+- **The original E-M10 (E113) is listed among "14 older bodies … surveyed, not tried."**
+- Now carries an **MIT licence** (it had none on the 2026-11-02 look), so its code could be reused with
+  attribution — but we have not needed to.
 
-Why it matters: it is the missing piece for testing a patch without the camera. A port for the E-M10
-Mark I would let menu-level changes be exercised and traced in the emulator. It would not prove the
-update process itself or anything involving the sensor, lens or card hardware.
+Why it mattered: it looked like the missing piece for testing a patch without the camera. But see the
+port attempt below — the E-M10 Mark I is below its supported generation.
+
+### E113 port attempt — 2026-11-15 (does not work without emulator-engine changes)
+Cloned to gitignored `research/om-emu-src/`, ran on a locally-installed Node 26 (system Node is 18).
+Baseline is healthy: `node emu/bin/test-pure.mjs` passes (CPU vs QEMU vectors, device models, 255/255
+purity). Steps taken:
+- Unpacked our stock E113 BIN with the emulator's own unpacker (`src/fw/olyfw.mjs labBlocks`): main
+  code block `0x0100` (load `0x40300000`, 18,874,304 B), resources `0x0101` (`blk01200000.OE.0101.bin`,
+  25,165,760 B), plus a third `0x0106` block. Wrote them to `unpacked/E113/`.
+- Added a minimal `E113` entry to `emu/src/fw/models.mjs` (board family `E118` — its SRAM base
+  `0x8FF00000` matches ours; `image_base 0x7d991020`; panels 720×480 / 800×600). E113 is now accepted
+  by `emu/bin/port.mjs`.
+- Fetched the E143 (OM-1) reference firmware (the whole cross-build map is built from it).
+- `node emu/bin/port.mjs E113` runs and **stops at the first of ~59 board-fact rules**: `coreByte`
+  scans the image for the core-id getter encoded `fc a8 <abs32 in 0x8ff00000..+0x1000> de 00 00`
+  (`movbu (abs32),d0; retf`) and finds **zero**. In our disassembly `0x8ff00000`/`0x8ff00004` never
+  appear as an immediate at all: E113's 2014 toolchain reaches that SRAM through a **register-held
+  base**, where the 2015-2022 bodies the rules were written for use **abs32 immediates**.
+
+Conclusion: porting E113 is not "fill a model table" (as E120 was, ~6 overrides via `port_via: E122`).
+E113 predates all three board families (E143/E144/E118 are 2015-2022) and has no `port_via` sibling,
+and its codegen does not match the fact-extraction rules. A port would mean **extending the emulator's
+own fact engine** (59 rules) to E113's encodings, then absorbing a large address-map override list
+across the 8-year gap from E143 — an emulator-development project of many sessions, success uncertain.
+And even a finished port could not validate a real flash-to-SD dump, because the NAND and card are
+stand-ins. Scaffolding (unpacked blocks, the `E113` MODELS entry) is left in `research/om-emu-src/` for
+any future attempt.
 
 ## omcap — `github.com/HolmHaensel/omcap` (GPL-3)
 Wi-Fi and USB tethering for the E-M1 Mark I. Covered in `../usb-protocol/wifi-api.md`.
