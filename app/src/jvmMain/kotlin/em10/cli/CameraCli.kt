@@ -17,6 +17,8 @@ Read-only:
   em10 cam ls [DIR] [-r]        list a card folder (default /DCIM); -r includes subfolders
   em10 cam get PATH [DEST]      download one file, e.g. /DCIM/100OLYMP/PB140001.JPG
   em10 cam thumb PATH [DEST]    download a picture's thumbnail
+  em10 cam resize PATH [DEST] [--size 1024|1600|1920|2048]
+                                download a resized JPEG (play mode; default 1600)
   em10 cam props                remote-control properties with value and allowed values (rec mode)
   em10 cam lens                 lens attached, power zoom (rec mode)
 
@@ -62,6 +64,14 @@ fun cameraCommand(args: List<String>) {
             val path = rest.getOrNull(0) ?: usage(CAMERA_USAGE)
             val dest = File(rest.getOrNull(1) ?: "thumb_" + path.substringAfterLast('/').substringBeforeLast('.') + ".jpg")
             dest.writeBytes(camera.thumbnail(path))
+            println("saved ${dest.path} (${dest.length()} bytes)")
+        }
+        "resize" -> {
+            val size = option(rest, "--size")?.toIntOrNull() ?: 1600
+            if (size !in WifiCamera.RESIZE_SIZES) usage(CAMERA_USAGE)
+            val path = rest.getOrNull(0) ?: usage(CAMERA_USAGE)
+            val dest = File(rest.getOrNull(1) ?: "resize${size}_" + path.substringAfterLast('/').substringBeforeLast('.') + ".jpg")
+            dest.writeBytes(camera.resized(path, size))
             println("saved ${dest.path} (${dest.length()} bytes)")
         }
         "props" -> for (p in camera.properties()) {
