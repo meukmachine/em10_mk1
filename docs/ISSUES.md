@@ -24,9 +24,8 @@ firmware is flashed. Every **flash** item is therefore parked as an idea; its re
 3. **A8** — show the installed firmware version, so the update flow can say "you are up to date".
 4. **C8** — a live-view window; it unlocks most of the tethering features.
 5. **A1** — move the Wi-Fi client into the app's shared code once C1–C3 have confirmed the protocol.
-6. **M0** — find out on paper whether the firmware already contains unused Wi-Fi features.
-   **M12** alongside it: see whether the emulator can run this firmware; that decides how testable any
-   modification idea is.
+6. ~~M0~~ — done 2026-11-14: no switched-off Wi-Fi features (`mods/wifi-feature-gap.md`). **M12**:
+   see whether the emulator can run this firmware; that decides how testable any modification idea is.
 7. **A3, A4** — the two big user-facing screens: import and remote control.
 
 ## Wi-Fi client (`tools/emcam.py`)
@@ -52,6 +51,9 @@ firmware is flashed. Every **flash** item is therefore parked as an idea; its re
 | C12 | 3 | Second-monitor / webcam output of the live view | low | M | state | C8 | open |
 | C13 | 3 | Write GPS positions into pictures (`req_attachexifgps`, `req_storegpsinfo`); field layout not yet decoded | low | M | state | C3 | open |
 | C19 | 1 | Check `get_resizeimg` on one of the camera's own pictures (it returned the full file for another camera's JPEG) | med | S | read | – | done 2026-11-12: resizes own pictures (7.5 MB → 366 kB); other cameras' JPEGs come back whole |
+| C21 | 2 | Use the unadvertised `exec_takemisc.cgi?com=checklens` (rec mode, read-only): lens attached, power-zoom lens; offer `ctrlzoom` only when it says so. Called once by `livetest`, not yet seen live | low | S | read | C3 | open |
+| C22 | 2 | Parse the `startliveview` reply (list of information items in the stream) and map it to the extension-entry types; show the battery-empty, temperature and shots-left warnings | med | S | state | C3 | open |
+| C23 | 3 | Try the camera's built-in web gallery: open `http://192.168.0.10/DCIM` in a browser while joined to the camera; note which connect mode serves it | low | S | read | – | open |
 | C20 | 3 | Offer to set the camera clock when pictures carry the unset date 2014-01-01 (there is no clock command over Wi-Fi; `set_utctimediff` only sets the zone offset) | low | S | read | – | open |
 
 ## App (`app/`, Kotlin Multiplatform)
@@ -78,16 +80,16 @@ paper research that would tell us what such a modification would involve.
 
 | Id | P | Issue | Value | Effort | Risk | Depends | Status |
 |---|---|---|---|---|---|---|---|
-| M0 | 2 | Research: does the E-M10 firmware contain unused Wi-Fi handlers that the E-M1 exposes (movie start/stop, `get_screennail`, more properties)? Decides whether M1–M3 are small switches or new code | high | M | none | – | open |
+| M0 | 2 | Research: does the E-M10 firmware contain unused Wi-Fi handlers that the E-M1 exposes (movie start/stop, `get_screennail`, more properties)? Decides whether M1–M3 are small switches or new code | high | M | none | – | done 2026-11-14: no; all three are new code (`mods/wifi-feature-gap.md`) |
 | M12 | 2 | Research: try the E-M10 Mark I firmware in the OM-Emu emulator (listed there as "surveyed, not tried"; the Mark II–IV are ported). A working port would let changes be tested without the camera. See `mods/related-projects.md` | high | L | none | – | open |
 | M13 | 3 | Research: read the Caduceus E-P7 and OM-3 notes for methods that transfer (code placement, card-loaded code, patcher with checksum, on-card debug log) and for which of their features could exist on a 2014 body | med | M | none | – | open |
 | M10 | 3 | Research: a build setup for patch code (assembler and linker scripts for code placed in the free area of block 0, checked against the "never patch" list) | med | M | none | – | open |
 | M11 | 3 | Research: the open flash-safety questions in `STATUS.md` (what selects the card update at power-on, recovery after a failed write). Prerequisite for ever un-parking a flash item | high | L | none | – | open |
-| M1 | – | Movie start and stop over Wi-Fi (the E-M1 has `startmovietake` / `stopmovietake`) | med | ? | flash | M0 | parked |
-| M3 | – | More remote properties over Wi-Fi: AF area, picture mode and others the E-M10 leaves out | med | ? | flash | M0 | parked |
+| M1 | – | Movie start and stop over Wi-Fi (the E-M1 has `startmovietake` / `stopmovietake`). New code in the Wi-Fi handler **and** a new event receiver in the camera task | med | L | flash | M10 | parked |
+| M3 | – | More remote properties over Wi-Fi (the E-M1 has 34, the E-M10 14). Wi-Fi-side code only: the camera side accepts any property number | med | M | flash | M10 | parked |
 | M4 | – | Battery level over Wi-Fi (neither the E-M10 nor the E-M1 offers it) | med | L | flash | M10 | parked |
 | M5 | – | Aperture-ring support for lenses with a ring (community "ring-native" patch). Image is built and verified locally; never run on a real E-M10 | med | S | flash | M11 | parked |
-| M2 | – | Screen-size previews (`get_screennail`) for faster browsing | low | ? | flash | M0 | parked |
+| M2 | – | Screen-size previews (`get_screennail`) for faster browsing. A new Wi-Fi handler like `get_thumbnail`; the file layer already knows these previews | low | M | flash | M10 | parked |
 | M6 | – | Community feature patches: shutter sound, fonts, language | low | S | flash | M11 | parked |
 | M7 | – | Copy the factory pictures stored in flash to the memory card | low | L | flash | M10, M11 | parked |
 | M9 | – | Offer patched-firmware builds in the app (port of `tools/fwpatch.py`), only after a patched image has been proven on the real camera | low | M | flash | M5 | parked |

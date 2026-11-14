@@ -226,7 +226,9 @@ def liveview(cam, frames, out, port, host_timeout, stats=None):
     port = sock.getsockname()[1]
     sock.settimeout(host_timeout)
     os.makedirs(out, exist_ok=True)
-    cam.request("exec_takemisc.cgi?com=startliveview&port=%d" % port)
+    reply = cam.request("exec_takemisc.cgi?com=startliveview&port=%d" % port)
+    if stats is not None:
+        stats["start_reply"] = reply.decode("utf-8", "replace")
     asm, n, dropped = FrameAssembler(), 0, 0
     try:
         while n < frames:
@@ -320,6 +322,10 @@ def livetest(cam, out, assume_yes):
             log("properties", "\n".join("%-18s %-6s %-22s %s" % (d["name"], d["attribute"], d["value"], " ".join(d["enum"]))
                                         for d in ds))
             log("get takemode raw", cam.text("get_camprop.cgi?com=get&propname=takemode"))
+            try:  # in the firmware's table but not in get_commandlist; read-only (lens attached, power zoom)
+                log("exec_takemisc checklens raw", cam.text("exec_takemisc.cgi?com=checklens"))
+            except CameraError as e:
+                log("exec_takemisc checklens", "ERROR %s" % e)
             return ds
         props = step("properties", "2/7  Read the remote-control properties (read-only).", read_props) or []
 
@@ -328,10 +334,11 @@ def livetest(cam, out, assume_yes):
             liveview(cam, 20, os.path.join(out, "liveview"), 0, cam.timeout, stats)
             sizes = stats.get("frame_sizes", [])
             log("live view", "frames %s, dropped %s, datagrams %s, largest datagram %s bytes\n"
-                             "frame sizes min/avg/max %s\nfirst header %s\nextension entries (type, words) %s"
+                             "frame sizes min/avg/max %s\nfirst header %s\nextension entries (type, words) %s\n"
+                             "startliveview reply %s"
                 % (stats.get("frames"), stats.get("dropped"), stats.get("datagrams"), stats.get("max_datagram"),
                    ("%d / %d / %d" % (min(sizes), sum(sizes) // len(sizes), max(sizes))) if sizes else "-",
-                   stats.get("first_header"), stats.get("tlv")))
+                   stats.get("first_header"), stats.get("tlv"), stats.get("start_reply")))
         step("live view", "3/7  Receive 20 live-view frames (the camera's screen may go dark meanwhile).", live)
 
         def set_same():

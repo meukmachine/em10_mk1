@@ -400,8 +400,9 @@ Shared helpers: 0x7d996fe2 = get-session (get/desc), 0x7d996faa = get-session (s
 0x7d996ff0 / 0x7d996fb8 = release-session, 0x7e7074a1 = HTTP-200 respond, 0x7e7074e6 = HTTP-520
 error respond, 0x7e711d09 = response-list builder, 0x7d9999f9 = error/log formatter.
 
-**Dead ends logged:** (1) sub-id `10032` (0x2730) has a real desc formatter (0x7e7124e9) in the
-switch but is an **orphan case**: exactly 7 Wi-Fi desc leaves call 0x7e70e88e (expcomp 2, focalvalue
+**Dead ends logged:** (1) sub-id `10032` (0x2730) has a desc formatter (0x7e7124e9) in the
+switch, but that formatter only returns an empty string (corrected 2026-11-14, see
+`../mods/wifi-feature-gap.md`); it is a stub, not a hidden property. It is also an **orphan case**: exactly 7 Wi-Fi desc leaves call 0x7e70e88e (expcomp 2, focalvalue
 3, shutspeedvalue 4, isospeedvalue 6, wbvalue 9, drivemode 2075, artfilter 280), and none passes
 10032 — so no Wi-Fi desclist property drives it. It is reachable only by some non-Wi-Fi caller of
 0x7e70e88e (internal camprop query), not through the 14-entry desclist. (2) The read-only simple
@@ -435,6 +436,15 @@ These six are exactly the `exec_shutter.cgi?com=` values seen in the OI.Share ca
 (`../usb-protocol/wifi-cgi-endpoints-oishare-4.6.0.txt`). So the Wi-Fi shutter control is a thin
 HTTP→app-event shim: each `com` posts one key-state event (events 0x41b0024..29) into the body's
 normal shutter-button event path.
+
+### exec_takemisc sub-commands (table 0x7e7815d8, added 2026-11-14)
+
+Six `{name, handler}` records: `startliveview` 0x7e70c2aa, `stopliveview` 0x7e70c37d, `getrecview`
+0x7e70c3d3, `getlastjpg` 0x7e70c463, `ctrlzoom` 0x7e70c617 and **`checklens` 0x7e70c758**, which the
+command list does not advertise. `checklens` replies
+`<response><lensmount>ok|ng</lensmount><electrically-driven>ok|ng</electrically-driven></response>`
+(lens attached; power-zoom lens). `startliveview` replies with an XML `<funcidlist>` naming the
+information items in the stream. Details and the built-in web gallery: `../mods/wifi-feature-gap.md`.
 
 ### exec_shuttermisc (leaf 0x7e70a292)
 Arg-indexed dispatch through an 8-byte `{strptr, handler}` table at **0x7e780c3c** (helper

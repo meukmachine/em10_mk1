@@ -112,8 +112,13 @@ class H(BaseHTTPRequestHandler):
                 if q.get("com") == "startliveview" and "port" in q:
                     STATE["lv"] = (self.client_address[0], int(q["port"]))
                     threading.Thread(target=stream, args=(STATE["lv"],), daemon=True).start()
+                    return self.reply('<?xml version="1.0"?><funcidlist><funcid name="framesize"/>'
+                                      '<funcid name="battempty"/></funcidlist>')
                 elif q.get("com") == "stopliveview":
                     STATE["lv"] = None
+                elif q.get("com") == "checklens":
+                    return self.reply('<?xml version="1.0"?><response><lensmount>ok</lensmount>'
+                                      '<electrically-driven>ng</electrically-driven></response>')
                 elif q.get("com") in ("getlastjpg", "getrecview"):
                     return self.reply(JPEG, ctype="image/jpeg")
                 else:

@@ -17,7 +17,7 @@ go under gitignored `firmware/` or `research/` and are never committed.
 ## Block 0 (code) analysis
 | script | purpose |
 |---|---|
-| `dis.py START END` | annotated disassembly at runtime addresses; needs `mn10300-elf-objdump` (see `docs/STATUS.md`) |
+| `dis.py START END [--blk FILE --base HEX]` | annotated disassembly at runtime addresses; needs `mn10300-elf-objdump` (see `docs/STATUS.md`). `--blk`/`--base` select another firmware, e.g. the E-M1 block 0 at base `6daf1020` |
 | `rtos_tasks.py` | dump the RTOS task id/name table |
 | `verify_usb.py` | check live USB DeviceInfo findings against the per-mode opcode arrays in block 0 |
 | `symbol_index.py` | address → doc index built from `docs/` only (output is committable) |

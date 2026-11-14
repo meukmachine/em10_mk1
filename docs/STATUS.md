@@ -164,6 +164,11 @@ Prioritised list of app, client and firmware-idea work: [`ISSUES.md`](ISSUES.md)
 Related outside projects (OM-3 and E-P7 firmware mods with the same CPU and card-update method, an
 emulator for this firmware family): [`mods/related-projects.md`](mods/related-projects.md).
 
+Wi-Fi features compared with the E-M1 4.6 firmware (issue M0, 2026-11-14): no switched-off commands;
+movie control, screen-size previews and extra properties would be new code. One unadvertised
+read-only command (`checklens`) and a built-in browser gallery were found:
+[`mods/wifi-feature-gap.md`](mods/wifi-feature-gap.md).
+
 ## Open RE items
 - What starts the SD scanner task at power-on (OK held), and whether that code is inside block 0.
 - Re-derive the task registry names from the names the boot code logs (ids are shifted by one).

@@ -6,10 +6,12 @@ Wraps mn10300-elf-objdump (GNU binutils built with --target=mn10300-elf, on PATH
 inside the block, the string itself.
 
 usage:
-  dis.py START END [--blk FILE]     START/END = runtime addresses, hex (0x optional)
+  dis.py START END [--blk FILE] [--base HEX]   START/END = runtime addresses, hex (0x optional)
   dis.py 7de57e24 7de58a90
+  dis.py 6e5ed442 6e5ed51e --blk firmware/stock/dec-em1/blk00_40300000.bin --base 6daf1020
 
-Runtime base is 0x7d991020 (file offset 0 of blk00). Default FILE = firmware/stock/dec/blk00_40300000.bin.
+Runtime base is 0x7d991020 (file offset 0 of the E-M10 blk00); the E-M1 4.6 blk00 runs at 0x6daf1020.
+Default FILE = firmware/stock/dec/blk00_40300000.bin.
 """
 import os, re, shutil, subprocess, sys
 
@@ -30,6 +32,10 @@ def main(argv):
     blk = argv[argv.index("--blk") + 1] if "--blk" in argv else DEFAULT_BLK
     if "--blk" in argv:
         args.remove(blk)
+    if "--base" in argv:
+        global RT
+        RT = int(argv[argv.index("--base") + 1], 16)
+        args.remove(argv[argv.index("--base") + 1])
     if len(args) != 2:
         sys.exit(__doc__)
     start, end = (int(a, 16) for a in args)
