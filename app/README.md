@@ -29,6 +29,8 @@ fake camera and `tools/emcam_mock.py`; not yet run on the camera.
 ./gradlew build                 # compile and run the tests
 ./gradlew installJvmDist        # build/install/em10-jvm/bin/em10
 build/install/em10-jvm/bin/em10 check
+./gradlew linuxApp              # build/linux/em10/bin/em10: Linux x86_64 program with its own Java
+                                # runtime (no Java needed where it runs), also as a .tar.gz
 ```
 The wrapper downloads Gradle 9.8.2 (checksum pinned) on first use; Kotlin 2.4.20 comes with the plugin.
 Built and tested on Java 27, where Kotlin compiles for a Java 26 target and says so in a warning.
