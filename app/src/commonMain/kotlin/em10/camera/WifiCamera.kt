@@ -180,9 +180,7 @@ class WifiCamera(
      * AF target before the shot (touch AF). [exposureMs] is how long to hold the take between start and
      * stop — short for a normal exposure; a long hold is how bulb / live-time would work.
      *
-     * UNVERIFIED on the E-M10: the exact timing and whether `point` belongs on `starttake` as well as
-     * `takeready` may need adjusting after a live test (firmware phase machine `exec_takemotion.cgi`,
-     * docs/firmware/wifi-cgi.md).
+     * Confirmed on the E-M10 (2026-11-14): one picture, live view stayed on through the shot.
      */
     fun captureInRec(focusWaitMs: Long = 2000, exposureMs: Long = 500, point: String? = null, driveMode: String? = null) {
         if (driveMode != null) setProperty("drivemode", driveMode)

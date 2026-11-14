@@ -70,7 +70,7 @@ From 2026-11-14 new client features are built in the Kotlin app (`app/`, package
 | A9 | 2 | Find mounted memory cards, check free space and file system before writing the update file | med | M | none | – | open |
 | A2 | 2 | Desktop window for the firmware flow (check, download, verify, write to card, on-camera steps) | med | M | none | A8, A9 | open |
 | A3 | 2 | Import screen: thumbnail grid, select or "all new", download with progress | high | L | read | A1 | blocked |
-| A4 | 2 | Remote-control screen: live view, settings panel, shutter, touch AF | high | L | state | A1 | in progress: first desktop window (Compose Multiplatform 1.12.1, `em10.gui`), live-view feed + shutter button on the headless `em10.camera` client; `./gradlew run` or the "em10 GUI" run config. Left: settings panel, touch AF |
+| A4 | 2 | Remote-control screen: live view, settings panel, shutter, touch AF | high | L | state | A1 | in progress: first desktop window (Compose Multiplatform 1.12.1, `em10.gui`), live-view feed + shutter button on the headless `em10.camera` client; `./gradlew run` or the "em10 GUI" run config. Shoot now uses `captureInRec` (starttake) so live view survives the shot — confirmed on the camera 2026-11-14. Left: settings panel, touch AF |
 | A10 | 3 | Build on Java 21–25 as well as 27, continuous build, installable packages | low | M | none | – | open |
 | A5 | 3 | Android target (needs the Android SDK installed) | med | L | none | A1 | blocked |
 | A7 | 3 | USB transport for import and device info (standard PTP/MTP). Camera control over USB is limited on this body to its own 18 vendor operations | med | L | read | – | open |

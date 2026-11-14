@@ -613,6 +613,11 @@ arm (`takeready`), and start/stop a take (`starttake`/`stoptake`). This matches 
 movie-record and touch-AF controls. Phase cell `0xa0a92590` sits in the same state block as cammode
 (0xa0a9257e), the mode-ack flag (0xa0a9258a) and lvqty (0xa0a9258c).
 
+Confirmed on the E-M10 (2026-11-14): `takeready` → `starttake` → `stoptake` (≈500 ms hold) takes one
+still **without leaving rec mode**, so the live-view stream keeps running through the shot, unlike the
+`exec_shutter` press sequence which needs shutter mode and tears live view down. Client:
+`WifiCamera.captureInRec`; GUI Shoot uses it when live view is up.
+
 **Wi-Fi CGI surface is now fully mapped** — every entry in the get_commandlist grammar (23 CGIs) and
 every rec-dispatcher leaf has a traced handler. Remaining camprop value *encodings* are intentionally
 left to the client (it reads the `desc`/`enum` lists); the GPS-write field layouts are the only
