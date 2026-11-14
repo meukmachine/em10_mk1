@@ -178,5 +178,36 @@ before the shot, after it (rec mode) and again in play mode:
 - `getlastjpg` returned exactly the new JPEG (same size as on the card, EXIF time 11 s before the computer's
   clock, so the camera clock is now correct), in 27.5 s.
 - **`getrecview` timed out again** (10 s), so it is reproducible: in this setup it does not answer after a
-  remote shot. Possibly it needs the camera's "Rec View" display setting or a different timing; not tested.
+  remote shot. Explained below: the camera waits up to 15 s for a review image, longer than our timeout.
+
+## After a shot: how OI.Share handles the slow full-size download (C5, 2026-11-14)
+
+From the OI.Share 4.6 decompile (jadx, kept local in the ignored `research/oishare/jadx/`). The E-M10
+reports protocol 2.20, so the app opens `RemoconV22Activity` (a subclass of `RemoconV21Activity`) in
+"control" mode and `RemoconReleaseActivity` in shutter-release mode.
+
+- **Release mode** (`switch_cammode mode=shutter`, `exec_shutter`, no live view) fetches nothing after a
+  shot.
+- **Control mode** (rec mode, live view) shoots with `exec_takemotion com=starttake` (optionally
+  `&point=XXXXxYYYY` for touch AF), not with `exec_shutter`. When the app's "image check" setting
+  (`settings.imgChk`) is above zero it first stops live view ("stop live view before getting the rec
+  view"), then requests `exec_takemisc com=getrecview` with a 15 s timeout and shows the decoded image on a
+  review screen (`RemoconRecviewActivity`). On error it just restarts live view.
+- **The full JPEG is fetched only on request:** the review screen's Save button calls
+  `exec_takemisc com=getlastjpg` (15 s timeout), shows a progress dialog, keeps the phone's screen on
+  during the transfer and first checks for 5 MB free space on the phone. Nothing is downloaded
+  automatically after a shot.
+- `get_resizeimg` (sizes from the app's transfer setting) is used only in the image-transfer list and
+  the background transfer service, not after remote shots.
+
+So the app does not speed up the 28 s; it avoids it by showing a small review image and leaving the full
+download to the user.
+
+Firmware side (`getrecview` handler `0x7e70c3d3`): it reads the review-image handle and size
+(`remocon.rec_view.handle` / `.size` at `0xa0a92598` / `0xa0a9259c`, under a lock). When the handle is
+empty it waits on the remote task's event flag, bit 2, **for up to 15 000 ms** (`0x7e70e1d0`), reads again
+and **clears the handle**, so each review image can be fetched once. With no image it answers 520, error
+1005. The handle and bit 2 are set by the remote task's `RECVIEW COMP` app event (`0x7e70bab3`). Our
+client gave up after 10 s, before the camera's 15 s wait ended. Whether a shot through `exec_shutter`
+(shutter mode) produces a `RECVIEW COMP` at all is open; the app only uses `getrecview` after `starttake`.
 
