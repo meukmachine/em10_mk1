@@ -161,6 +161,22 @@ the return to play mode passed; step 7 failed (below).
   picture is an older one; the owner saw the camera fire, so the clock is the likelier explanation.
 - **`getrecview`**, called right after, timed out (10 s).
 - **The new picture did not appear in `get_imglist`:** `101OLYMP` listed 311 entries before and after the
-  shot (the same count as on 2026-11-12). Not explained yet. A cached file list in the Wi-Fi task (built at
-  connection time) would fit; a fresh connection and `emcam.py ls /DCIM/101OLYMP` would show it.
+  shot (the same count as on 2026-11-12). Not reproduced in the second run (below), and the owner emptied
+  the card in between, so it stays unexplained. That run only compared the newest `*OLYMP` folder.
+
+Second run the same evening, on an emptied card, with `livetest` comparing every entry under `/DCIM`
+before the shot, after it (rec mode) and again in play mode:
+
+- All steps passed. The card went from empty (no `/DCIM` entries, `get_dcffilenum` 0) to
+  `/DCIM/100OLYMP` with `PB140001.JPG` (7 988 289 bytes) and `PB140001.ORF` (14 814 904 bytes): the camera
+  saves RAW + JPEG, names the files `P` + month (`B` = November) + day + number, and creates the folder
+  with the first picture.
+- **`get_imglist` works in rec mode** and showed the new files right after the shot (the listing step
+  took 5.1 s: the camera answers 520 while it is still writing). Play mode showed the same three entries.
+- `get_dcffilenum` is rejected in rec mode (520, error 1001); in play mode it went 0 → 1 (one RAW + JPEG
+  pair counts as one picture).
+- `getlastjpg` returned exactly the new JPEG (same size as on the card, EXIF time 11 s before the computer's
+  clock, so the camera clock is now correct), in 27.5 s.
+- **`getrecview` timed out again** (10 s), so it is reproducible: in this setup it does not answer after a
+  remote shot. Possibly it needs the camera's "Rec View" display setting or a different timing; not tested.
 
