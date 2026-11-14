@@ -63,8 +63,12 @@ RAM pointers `0x6044cbc4`+.
   the container gate (only an additive checksum, no signature — `docs/firmware/container-format.md`).
 - Recovery is still the SD `FIRMUP_SRV` task (`docs/firmware/rtos-tasks.md`), intact unless the payload
   kills the kernel/scheduler/flash stack or corrupts cold-boot. The bootloader/1st-stage is **not in
-  the update file** (SoC mask ROM `~0x47001xxx` + NAND boot region), so a body update cannot overwrite
-  it — reinforcing that a bad body flash is usually SD-recoverable.
+  the update file**, so a body update cannot overwrite it — reinforcing that a bad body flash is usually
+  SD-recoverable. (2026-11-15 correction: this is the flash region **below** the code block's flash base
+  `0x40300020` — the reset head copies 256 KiB from flash `0x40060000` → `0x7ff8a000` that no shipped
+  `.BIN` block holds — plus the NAND boot region. The `0x47001xxx` library is **not** part of it; that
+  one IS in the update file, boot-copied from code-block offset `0x10497e0`. See
+  `docs/firmware/memory-map.md`.)
   (2026-11-14: the SD route itself is proven live with a stock image and intact block 0; recovery
   after a block-0 patch that breaks startup is still unproven, see `camera-fw-update.md`.)
 
