@@ -76,6 +76,28 @@ screen rectangles: `Rect(x = v>>16, y = v&0xFFFF, …)` — i.e. the AF/face-det
 on-screen indicators the app overlays on live view. The replacement can ignore the TLV block and
 still get video; parse it only to draw AF/face boxes and status.
 
+## Types on the E-M10 Mark I (observed 2026-11-14)
+
+The `startliveview` reply lists the stream's information items as a `<funcidlist>` (template in the
+firmware at `0x7e781790`). The first frame of a live test on the E-M10 carried the types
+`1 4 5 3 2 6 7 8 9 10 12 11 14 16 17 18`. Type *n* is the *n*-th item of the list; this fits the word
+counts and type 1 = JPEG size from the app parser:
+
+| type | item | words | type | item | words |
+|---|---|---|---|---|---|
+| 1 | framesize (JPEG size) | 1 | 10 | expcomp | 3 |
+| 2 | afframeinfo | 5 | 11 | wbvalue | 2 |
+| 3 | mntmediainfo | 1 | 12 | isospeedvalue | 3 |
+| 4 | rotation | 1 | 13 | contnotstop | not sent |
+| 5 | maxtakenum (shots left) | 1 | 14 | aspectratio | 1 |
+| 6 | temperror | 1 | 15 | liveaddinfo | not sent |
+| 7 | battempty | 1 | 16 | expphotowarning | 1 |
+| 8 | shutspeedvalue | 3 | 17 | focusinfo | 1 |
+| 9 | focalvalue | 3 | 18 | zoominfo | 3 (sent without a power-zoom lens) |
+
+The positional mapping is an inference from one frame; the values themselves were not recorded, so their
+encodings are still open. Types 13 and 15 are presumably sent only while they apply.
+
 ## Full TLV table — newer stream variant
 
 The newer receiver (`e.b.b.g.a` = `JpegUdpReceiver`; frame object `e.b.b.b` = `OlyLiveviewData`;

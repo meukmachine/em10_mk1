@@ -171,6 +171,30 @@ def fat_time(t):
     return "%02d:%02d:%02d" % (t >> 11, (t >> 5) & 63, (t & 31) * 2)
 
 
+def exif_datetime(jpeg):
+    """DateTimeOriginal (or DateTime) of a JPEG as 'YYYY:MM:DD HH:MM:SS', or None."""
+    i = jpeg.find(b"Exif\0\0")
+    if i < 0:
+        return None
+    t = jpeg[i + 6:i + 6 + 65536]
+    e = "<" if t[:2] == b"II" else ">"
+    try:
+        def entries(off):
+            n = struct.unpack(e + "H", t[off:off + 2])[0]
+            return {struct.unpack(e + "H", t[p:p + 2])[0]: p for p in range(off + 2, off + 2 + 12 * n, 12)}
+        def ascii_at(p):
+            cnt, val = struct.unpack(e + "II", t[p + 4:p + 12])
+            return t[val:val + cnt].rstrip(b"\0").decode("ascii", "replace")
+        ifd0 = entries(struct.unpack(e + "I", t[4:8])[0])
+        if 0x8769 in ifd0:
+            sub = entries(struct.unpack(e + "I", t[ifd0[0x8769] + 8:ifd0[0x8769] + 12])[0])
+            if 0x9003 in sub:
+                return ascii_at(sub[0x9003])
+        return ascii_at(ifd0[0x132]) if 0x132 in ifd0 else None
+    except (struct.error, IndexError):
+        return None
+
+
 def save(data, path):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "wb") as f:
@@ -293,10 +317,40 @@ def livetest(cam, out, assume_yes):
             print("  failed: %s" % e)
             return None
 
-    def own_folder():
-        dirs = [e for e in cam.listdir("/DCIM") if e["is_dir"]]
-        mine = [e for e in dirs if "OLYMP" in e["name"]] or dirs
-        return sorted(mine, key=lambda e: e["name"])[-1]["path"] if mine else None
+    def card_snapshot():
+        """Every entry under /DCIM (folders too) as {path: (size, date time)}, plus the file counter."""
+        snap = {}
+
+        def walk(d):
+            for e in cam.listdir(d):
+                snap[e["path"]] = (e["size"], "%s %s" % (e["date"], e["time"]))
+                if e["is_dir"]:
+                    walk(e["path"])
+        try:
+            walk("/DCIM")
+        except CameraError as e:
+            if snap:
+                raise
+            snap["(no /DCIM: %s)" % e] = (0, "")   # an empty card may have no /DCIM until the first shot
+        try:
+            count = cam.tag("get_dcffilenum.cgi", "dcffile")
+        except CameraError as e:
+            count = "error: %s" % e
+        return snap, count
+
+    def card_diff(title, before, after):
+        (b, bc), (a, ac) = before, after
+        added = sorted(p for p in a if p not in b)
+        removed = sorted(p for p in b if p not in a)
+        changed = sorted(p for p in a if p in b and a[p] != b[p])
+        lines = ["entries %d -> %d, get_dcffilenum %s -> %s" % (len(b), len(a), bc, ac)]
+        lines += ["  new      %s  %d bytes  %s" % (p, a[p][0], a[p][1]) for p in added]
+        lines += ["  gone     %s" % p for p in removed]
+        lines += ["  changed  %s  %s -> %s" % (p, b[p], a[p]) for p in changed]
+        if not (added or removed or changed):
+            lines.append("  no difference")
+        log(title, "\n".join(lines))
+        return added
 
     print("Guided live test. It switches the camera to rec mode, reads its settings, receives live view,\n"
           "writes one setting back unchanged, takes ONE picture and returns to play mode.\n"
@@ -305,9 +359,8 @@ def livetest(cam, out, assume_yes):
     try:
         log("start", "connect mode %s, model %s" % (cam.tag("get_connectmode.cgi", "connectmode"),
                                                     cam.tag("get_caminfo.cgi", "model")))
-        folder = own_folder()
-        before = {e["name"] for e in cam.listdir(folder)} if folder else set()
-        log("card before", "folder %s, %d entries" % (folder, len(before)))
+        before = card_snapshot()
+        log("card before (play mode)", "%d entries under /DCIM, get_dcffilenum %s" % (len(before[0]), before[1]))
 
         def to_rec():
             cam.set_mode("rec", "0640x0480")
@@ -360,7 +413,8 @@ def livetest(cam, out, assume_yes):
             for com in ("getlastjpg", "getrecview"):
                 try:
                     data = cam.request("exec_takemisc.cgi?com=" + com)
-                    log("exec_takemisc %s" % com, "%d bytes, starts %s" % (len(data), data[:4].hex()))
+                    log("exec_takemisc %s" % com, "%d bytes, starts %s, taken %s (computer time now %s)"
+                        % (len(data), data[:4].hex(), exif_datetime(data), time.strftime("%Y:%m:%d %H:%M:%S")))
                     if data[:2] == b"\xff\xd8":
                         with open(os.path.join(out, com + ".jpg"), "wb") as f:
                             f.write(data)
@@ -370,17 +424,15 @@ def livetest(cam, out, assume_yes):
             step("last picture", "6/7  Ask the camera for the picture it just took (two commands, read-only).", fetch_last)
 
         def new_files():
-            f = own_folder()
-            now = cam.listdir(f) if f else []
-            new = [e for e in now if e["name"] not in before]
-            log("card after", "folder %s, %d entries, new: %s" % (f, len(now), [(e["name"], e["size"]) for e in new]))
-            jpg = next((e for e in new if e["name"].upper().endswith(".JPG")), None)
+            new = card_diff("card after the shot (rec mode) compared with before", before, card_snapshot())
+            jpg = next((p for p in new if p.upper().endswith(".JPG")), None)
             if jpg:
-                with open(os.path.join(out, "thumb_" + jpg["name"]), "wb") as fh:
-                    fh.write(cam.request("get_thumbnail.cgi?DIR=" + urllib.parse.quote(jpg["path"])))
+                with open(os.path.join(out, "thumb_" + jpg.rsplit("/", 1)[-1]), "wb") as fh:
+                    fh.write(cam.request("get_thumbnail.cgi?DIR=" + urllib.parse.quote(jpg)))
             if shot and not new:
-                raise CameraError("a picture was taken but no new file appears in %s" % f)
-        step("new files", "7/7  List the card again to find the new picture and fetch its thumbnail (read-only).", new_files)
+                raise CameraError("a picture was taken but the card listing shows no new file (rec mode)")
+        step("new files", "7/7  List the whole card again, compare it with the start and fetch the new picture's "
+                          "thumbnail (read-only).", new_files)
     except KeyboardInterrupt:
         summary.append(("test", "stopped by you", ""))
     except CameraError as e:
@@ -390,6 +442,12 @@ def livetest(cam, out, assume_yes):
             try:
                 cam.set_mode("play")
                 summary.append(("back to play mode", "ok", ""))
+                try:  # the rec-mode listing missed a new picture once; compare again in play mode
+                    time.sleep(2.0)
+                    new = card_diff("card after, back in play mode, compared with before", before, card_snapshot())
+                    summary.append(("card in play mode", "ok", "%d new entries" % len(new)))
+                except CameraError as e:
+                    summary.append(("card in play mode", "FAILED", str(e)))
             except CameraError as e:
                 summary.append(("back to play mode", "FAILED", str(e)))
         text = "emcam live test\n\nSUMMARY\n" + "\n".join("  %-24s %-16s %s" % r for r in summary) + "\n\n" + "\n".join(report)

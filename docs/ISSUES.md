@@ -34,8 +34,8 @@ firmware is flashed. Every **flash** item is therefore parked as an idea; its re
 |---|---|---|---|---|---|---|---|
 | C1 | 1 | Live test of the read-only commands on the E-M10: `info`, `ls -r`, `get`, `thumb`, `resize`, `pull` | high | S | read | camera on Wi-Fi | done 2026-11-12 (probe, 16/16) |
 | C2 | 3 | Capture the real `get_unusedcapacity` reply and parse it (done: `<unused>N</unused>`, saturates at 4294967295). Left: see a value below 4 GB to confirm the unit | low | S | read | C1 | open |
-| C3 | 1 | Live test of `mode`, `props`, `prop`, `set`, `shoot`, `liveview` | high | S | state | – | open: guided `emcam.py livetest` is ready (tested on the mock), waiting for a run on the camera |
-| C5 | 1 | Save to computer after each shot (`exec_takemisc` `getlastjpg` / `getrecview`) | high | S | state | C3 | open |
+| C3 | 1 | Live test of `mode`, `props`, `prop`, `set`, `shoot`, `liveview` | high | S | state | – | mostly done 2026-11-14: rec mode, properties, live view, set, shot all work on the camera; open: the new picture did not appear in the rec-mode card listing. `livetest` now compares the whole card before, after the shot and back in play mode; second run pending |
+| C5 | 1 | Save to computer after each shot (`exec_takemisc` `getlastjpg` / `getrecview`) | high | S | state | C3 | open: `getlastjpg` returns the full-size JPEG (8 MB in 28 s); `getrecview` timed out once |
 | C8 | 2 | Live-view window instead of saving frames (local web page served by the client) | high | M | state | C3 | open |
 | C4 | 2 | Touch autofocus: `focus X Y` using `assignafframe` / `takeready`, report focus ok and frame position | med | S | state | C3 | open |
 | C18 | 2 | Join the camera's Wi-Fi and return to the home network from the client (today a separate shell script) | med | S | none | – | open |
@@ -51,8 +51,8 @@ firmware is flashed. Every **flash** item is therefore parked as an idea; its re
 | C12 | 3 | Second-monitor / webcam output of the live view | low | M | state | C8 | open |
 | C13 | 3 | Write GPS positions into pictures (`req_attachexifgps`, `req_storegpsinfo`); field layout not yet decoded | low | M | state | C3 | open |
 | C19 | 1 | Check `get_resizeimg` on one of the camera's own pictures (it returned the full file for another camera's JPEG) | med | S | read | – | done 2026-11-12: resizes own pictures (7.5 MB → 366 kB); other cameras' JPEGs come back whole |
-| C21 | 2 | Use the unadvertised `exec_takemisc.cgi?com=checklens` (rec mode, read-only): lens attached, power-zoom lens; offer `ctrlzoom` only when it says so. Called once by `livetest`, not yet seen live | low | S | read | C3 | open |
-| C22 | 2 | Parse the `startliveview` reply (list of information items in the stream) and map it to the extension-entry types; show the battery-empty, temperature and shots-left warnings | med | S | state | C3 | open |
+| C21 | 2 | Use the unadvertised `exec_takemisc.cgi?com=checklens` (rec mode, read-only): lens attached, power-zoom lens; offer `ctrlzoom` only when it says so. Confirmed live 2026-11-14 | low | S | read | C3 | open (works; client not yet using it) |
+| C22 | 2 | Parse the `startliveview` reply (list of information items in the stream) and map it to the extension-entry types; show the battery-empty, temperature and shots-left warnings | med | S | state | C3 | open: mapping known (type = position in the list, `liveview-udp.md`); value encodings not yet recorded |
 | C23 | 3 | Try the camera's built-in web gallery: open `http://192.168.0.10/DCIM` in a browser while joined to the camera; note which connect mode serves it | low | S | read | – | open |
 | C20 | 3 | Offer to set the camera clock when pictures carry the unset date 2014-01-01 (there is no clock command over Wi-Fi; `set_utctimediff` only sets the zone offset) | low | S | read | – | open |
 

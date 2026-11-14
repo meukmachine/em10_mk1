@@ -138,3 +138,29 @@ Confirmed on this body:
 Side observation: every file in `101OLYMP` carries the date 2014-01-01 00:00:00, so the camera's clock was
 not set when they were taken.
 
+## Live test with `tools/emcam.py livetest` (2026-11-14, E-M10 Mark I, state-changing, run by the owner)
+`private` connect mode, a lens without power zoom. Raw report kept locally (not committed). Steps 1–6 and
+the return to play mode passed; step 7 failed (below).
+
+- **Rec mode** with `lvqty=0640x0480` (via play) works; live view arrives at 640 × 480.
+- **Properties:** `desclist` returns 12 entries: `touchactiveframe` (get, `0108-0080_0422x0318`),
+  `takemode`, `noisereduction`, `lowvibtime`, `bulbtimelimit`, `digitaltelecon`, `drivemode`, `focalvalue`,
+  `expcomp`, `shutspeedvalue`, `isospeedvalue`, `wbvalue`, `artfilter`; attributes and value lists as
+  predicted from the firmware. `wbvalue` values are numbers (`0 18 16 17 20 35 64 23 256 257 258 259 512`),
+  `shutspeedvalue` includes `livetime` and `livebulb`.
+- **`checklens`** (unadvertised, see `../mods/wifi-feature-gap.md`) answers
+  `<response><lensmount>ok</lensmount><electrically-driven>ng</electrically-driven></response>`, as
+  predicted: lens attached, no power zoom.
+- **Live view:** 20 frames, none dropped, 509 datagrams, largest 1472 bytes, frames 34–36 KB. The
+  `startliveview` reply is the 18-item `funcidlist` predicted from the firmware; the extension types of the
+  first frame match it by position (see `liveview-udp.md`).
+- **`set_camprop`** of `isospeedvalue` to its current value `Auto`: empty reply body, reads back `Auto`.
+- **Shot:** the shutter sequence in this document's E-M1 section works: the camera focused and fired.
+- **`getlastjpg`** returned a full-size JPEG (4608 × 3456, 8 133 304 bytes) in 27.9 s, about 290 KB/s.
+  Its EXIF date is 2026-11-12 00:42:34, two days before the test, so the camera clock is wrong or the
+  picture is an older one; the owner saw the camera fire, so the clock is the likelier explanation.
+- **`getrecview`**, called right after, timed out (10 s).
+- **The new picture did not appear in `get_imglist`:** `101OLYMP` listed 311 entries before and after the
+  shot (the same count as on 2026-11-12). Not explained yet. A cached file list in the Wi-Fi task (built at
+  connection time) would fit; a fresh connection and `emcam.py ls /DCIM/101OLYMP` would show it.
+

@@ -112,8 +112,8 @@ It then replies (builder `0x7e70ee0e`):
 ```
 
 So the client can tell whether a lens is attached and whether it has a power zoom, which is useful
-before offering `ctrlzoom` (C16). The command is read-only. `emcam.py livetest` calls it in step 2;
-not yet seen on the camera.
+before offering `ctrlzoom` (C16). The command is read-only. Confirmed on the camera on 2026-11-14
+(`emcam.py livetest` step 2): `lensmount` `ok`, `electrically-driven` `ng` with a lens without power zoom.
 
 ### Live-view information list (`startliveview` reply)
 
@@ -136,9 +136,9 @@ Consequences:
 - The stream carries a **battery-empty flag** (`battempty`), a temperature warning and the number of
   shots left (`maxtakenum`). It carries no battery level, on either body. M4 therefore stays
   new code, but a "battery empty" warning needs no modification.
-- The order of the list probably matches the extension-entry types in the stream (see
-  `../usb-protocol/liveview-udp.md`), but that is not checked. `emcam.py livetest` now records the
-  reply and the entry types of the first frame, which should settle it.
+- The position in the list is the extension-entry type in the stream: the live test on 2026-11-14
+  saw types 1–18 except 13 and 15, with word counts that fit (table in
+  `../usb-protocol/liveview-udp.md`). `battempty` is type 7.
 
 ### Built-in web gallery
 
