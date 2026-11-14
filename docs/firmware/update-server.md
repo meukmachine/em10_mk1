@@ -55,7 +55,8 @@ The BIN URL is expected inside `firmware_info`/`content_info` (unverified).
   sha256 `84d81b2dbd80ea2e94ec70e35acbba0e3193ccee8b51db14976fd0d9c4e3590c`. Stored in `firmware/stock/` (gitignored).
 - Header: `4f 45 11 30 ...` = "OE" + model id 1130. Body looks scrambled/compressed (not yet analyzed).
 - **SD-card update path (from community script):** copy as `E1139999.BIN` (code+`9999.BIN`) into `DCOLYMP/` on SD card,
-  power on holding OK. No USB/PTP needed. (UNVERIFIED for E-M10 Mark I; check.)
+  power on holding OK. No USB/PTP needed. **Verified on the E-M10 Mark I 2026-11-14** with this stock 1.4
+  image (lamp solid, then ~2 Hz blink = done, switch off; see `camera-fw-update.md`).
 - EULA in reply forbids copying beyond backup, redistribution, modification, reverse engineering of the Software.
   => keep BINs out of the repo (gitignored), do not redistribute; hobbyist analysis is at user's own risk/jurisdiction.
 

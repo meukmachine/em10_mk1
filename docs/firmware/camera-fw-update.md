@@ -235,8 +235,87 @@ after the NOREXE step. It is not evidence that a boot stage is protected.
 
 ### Consequence for recovery claims
 The statement that a bad patch "leaves the SD updater running, so stock can be reflashed" rests on
-an SD trigger that is observed only indirectly and whose selecting code is unknown. If that code
-lives in block 0, a patch that breaks early startup removes it. Treat SD recovery as **unproven**.
+an SD trigger whose selecting code is unknown. If that code lives in block 0, a patch that breaks
+early startup removes it. The 2026-11-14 run below proves the route works **with an intact block 0**;
+recovery **after a broken block 0** stays unproven.
+
+## Live stock reflash via SD card (2026-11-14)
+
+### What was done and seen
+- Stock 1.4 image fetched with `tools/fetch-firmware.sh E113 --download`
+  (`OLY_E_113_1400_0000_0000.BIN`, 70,254,592 B, sha256 `84d81b2d…3590c`, same as `update-server.md`),
+  copied unchanged to the card as `DCOLYMP/E1139999.BIN` (sha checked after write). Body was on 1.4
+  already, so this is a same-version reflash.
+- Owner powered on with OK held. Screen stayed dark the whole time; only the front red lamp
+  (self-timer / AF-assist lamp) showed state:
+  1. **solid** for about one minute;
+  2. then **blinking about twice per second**, steady, for many minutes;
+  3. a power-switch flip during the early part did nothing visible (probably during the solid
+     phase, when nothing polls the switch yet: not confirmed);
+  4. switching power **OFF** during the blink ended it. Next power-on: normal boot, firmware 1.4,
+     camera works.
+- So the OK-held SD trigger is **proven on this body**, and so is the whole read → validate → write
+  → report path for a stock image. Not shown: whether the writer actually rewrote the flash or
+  noticed the same version and skipped writing; the lamp reports success both ways.
+
+### Lamp states (static RE, matched to the live run)
+`subcpu_led(mode)` @ `0x7dc9cfa4` (log `[firmup]: subcpu_led/ unknown mode` for bad modes) sets the
+sub-CPU lamp with one parameter per mode. Mode 2 = 250 was seen as two blinks per second, so the
+parameter is most likely the half-period in ms.
+
+| mode | parameter | lamp | meaning (who sets it) |
+|---|---|---|---|
+| 1 | 255 | solid | file found (`Binary file Hakken`), set @ `0x7de576af`; stays solid while the server validates and writes |
+| 2 | 250 | ~2 Hz blink | **success**: `0x7dc9ccc0(3,2)` @ `0x7de57742` after all replies came back OK |
+| 3 | 100 | ~5 Hz blink | error during scan/read/server reply: `0x7dc9ce19(3,3)` @ `0x7de57574`, `0x7de576fa`, `0x7de5770b` |
+| 4 | 50 | ~10 Hz blink | validator error: `0x7dc9ce19(3,4)` @ `0x7de57b26` |
+| 5 | 0 | off | used at the end of an error wait |
+
+- `0x7dc9ccc0(d0,d1)` logs `Seikou`/`Saikou` ("success"); `0x7dc9ce19(d0,d1)` logs `Shippai`
+  ("failure"). Both set the lamp to mode d1 when d0 == 3 (the SD route). The USB route uses d0 == 4
+  and reboots instead: `SUCCESS_REBOOT` `ccc0(4,2)` @ `0x7de57de0`, `ERROR_REBOOT` `ce19(4,3)` @ `0x7de57dfb`.
+- Related strings: task name `FIRMUP_LED`; debug-shell usage
+  `usage: sdk api %s blink1 blink2 firmupOK firmupNG`; `[firmup]: subcpu_beep/ unknown mode`.
+
+### Client ↔ server flow
+- Client (`FIRMUP_CLI`) sends each component request to the server mailbox `0x7d9b06ee` with
+  `0x7d9c1429` (timeout -1, i.e. forever) @ `0x7de576c2`, then waits for the reply with `0x7d9c132d`
+  into `sp+196`; halfword 0 = OK.
+- Server (`FIRMUP_SRV`, loop `0x7de57942`) receives @ `0x7de5798a`, dispatches on type
+  (`[firmup]TYPE_FIRMUP_SYS`, `_LENS`, `_STB`, `_LANG`, `_SOUND`, `_C3D`, `_PIC`, `_GPS`, `_PSES`,
+  `_DATE`, `_CHECK`, `_USBUP`, `_DEFAULT`). On the SD route it replies @ `0x7de57e1a` **only after
+  the work is done**, then loops.
+- So the solid phase covers validation and writing, and the blink only starts after the last
+  write was reported OK.
+
+### End of an SD update: waiting for the power switch
+- `0x7dc9cf22` logs `Owariyade` ("it's over"), raises event flag `0x7d9b064e` (d1 = 7) via
+  `0x7d9c5599`, then polls `0x7dc9d18b(mode)`:
+  - mode 3 path: loops until bit 0 of `0x7d9db6ad()` is 1;
+  - mode 4 path: edge detection through bytes `0x60742708`/`0x60742709`.
+- `0x7d9db6ad` reads PMU registers `0x98e00058`, `0x5c`, `0x60`, `0x64`, `0x68` and packs each bit 31
+  into result bits 0-4. Bit 0 is most likely the power switch: switching OFF ended the wait live.
+  Boot code `0x7da882d0`, `0x7da883a5` and `0x7d9db604` test the same bit (`btst 1`).
+- After the wait: mode 4 → `0x7d9d3bf7` (reboot / power command); mode 3 → lamp off. Then
+  `0x7dc9d17f` → `0x7d9db57e` powers down through the PMU (`0x98e00000 |= 2`, `0x98e00048 = 255`,
+  `0x98e00044`), and the code branches to itself (halt).
+- Practical rule: **solid = busy, do not touch. Steady ~2 Hz blink = finished OK, switch the power
+  off.** Fast blinking = error; switching off is also the way out. A finished update does not reboot
+  by itself on the SD route; it waits for the switch indefinitely.
+
+### Correction
+During the run I first told the owner the 2 Hz blink meant "still writing", then that "the writer
+never changes the lamp while writing". Both were wrong. The server replies only after writing and the
+client sets the blink only after the last reply, so the blink means **done**. I also first read
+`0x7dc9d18b` as "loops while bit 0 is set"; it loops **until** bit 0 is set (`0x7dc9d1f3` returns 0
+when the bit is set).
+
+### Left open
+- Where the power-on OK test lives (still not found statically).
+- Whether a same-version image is rewritten or skipped.
+- Recovery after a block-0 patch that breaks early startup: untested, and not to be tested.
+- Remove `DCOLYMP/E1139999.BIN` from the card after a run, otherwise the next OK-held power-on
+  flashes again.
 
 ## Dead ends / notes
 - USB path: the real flash routine is behind a runtime-populated vtable slot (+36); can't follow the

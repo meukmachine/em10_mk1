@@ -69,9 +69,13 @@ All are `jmp` (opcode `DC`, rel32) into the payload cave `0x40326ff0..~0x4032740
 - **`usr_checksum` is a header↔tail duplicate-array check, not a payload hash.** Mid-payload patches
   do not touch either 20-byte window, so the built ring-native image passes every packaging gate
   statically. Only its runtime behaviour on the real body is unverified.
-- **Recovery is unproven.** The updater tasks live inside block 0, and the code that selects an SD
-  update at power-on is unknown. A patch that breaks only the lens/rec path would probably leave
-  an update route available; a patch that breaks boot, the scheduler or the SD stack would not.
+- **SD reflash proven live (2026-11-14).** Stock 1.4 as `DCOLYMP/E1139999.BIN`, power on with OK
+  held: front lamp solid ~1 min (validate + write), then ~2 Hz blink (= success, waiting for the power
+  switch); switch off, camera boots 1.4 and works. Lamp map and end-wait in `camera-fw-update.md`.
+- **Recovery after a broken block 0 is still unproven.** The updater tasks live inside block 0, and
+  the code that selects an SD update at power-on is unknown. A patch that breaks only the lens/rec
+  path would probably leave the (now proven) SD route available; a patch that breaks boot, the
+  scheduler or the SD stack would not.
 - USB PC-link update (`startFirmUp` `0x7e21d6dc`) is located but the flash routine sits behind a
   runtime vtable slot; not followed further.
 

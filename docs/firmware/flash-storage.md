@@ -65,6 +65,8 @@ RAM pointers `0x6044cbc4`+.
   kills the kernel/scheduler/flash stack or corrupts cold-boot. The bootloader/1st-stage is **not in
   the update file** (SoC mask ROM `~0x47001xxx` + NAND boot region), so a body update cannot overwrite
   it — reinforcing that a bad body flash is usually SD-recoverable.
+  (2026-11-14: the SD route itself is proven live with a stock image and intact block 0; recovery
+  after a block-0 patch that breaks startup is still unproven, see `camera-fw-update.md`.)
 
 ## Dead ends / limits
 - `0x7da82530` (per-slot helper) and `0x7d9929ce`/`0x7d9928ee` (fmem commit) not fully decoded — the
