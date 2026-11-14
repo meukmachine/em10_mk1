@@ -4,6 +4,8 @@ import em10.camera.CameraException
 import em10.camera.ChunkSink
 import em10.camera.FolderPictureStore
 import em10.camera.JvmCameraHttp
+import em10.camera.JvmUdpSocket
+import em10.camera.LiveView
 import em10.camera.Tethering
 import em10.camera.WifiCamera
 import java.io.File
@@ -24,6 +26,9 @@ Changing the camera's state:
   em10 cam shoot [--save DIR] [--raw] [--no-full] [--focus-wait MS]
                                 take one picture; --save finds it on the card and saves the thumbnail,
                                 then the full JPEG (about 28 s over Wi-Fi), with --raw also the ORF
+  em10 cam liveview [--save DIR] [--large] [--frames N]
+                                stream live view over UDP; --save writes each frame as a JPEG,
+                                --large uses 640x480 (default 320x240), stop with Ctrl-C
 
 Option: --host ADDRESS (default 192.168.0.10)
 """
@@ -74,6 +79,7 @@ fun cameraCommand(args: List<String>) {
             println("${rest[0]} set to ${rest[1]}; now reads ${camera.setProperty(rest[0], rest[1])}")
         }
         "shoot" -> shoot(camera, rest)
+        "liveview" -> liveview(camera, rest)
         else -> usage(CAMERA_USAGE)
     }
 }
@@ -121,6 +127,30 @@ private fun shoot(camera: WifiCamera, rest: MutableList<String>) {
         }
     }
     println("done; the camera is in rec mode")
+}
+
+private fun liveview(camera: WifiCamera, rest: MutableList<String>) {
+    val saveDir = option(rest, "--save")?.also { File(it).mkdirs() }
+    val size = if (rest.remove("--large")) WifiCamera.LiveViewSize.LARGE else WifiCamera.LiveViewSize.SMALL
+    val maxFrames = option(rest, "--frames")?.toIntOrNull() ?: Int.MAX_VALUE
+    val live = LiveView(camera, JvmUdpSocket, receiveTimeoutMs = 2000)
+    Runtime.getRuntime().addShutdownHook(Thread { live.stop() })
+    var count = 0
+    val start = System.nanoTime()
+    println("live view ${size.wire}${saveDir?.let { " -> $it" } ?: ""}; Ctrl-C to stop")
+    val frames = live.run(size, onDrop = { }) { frame ->
+        count++
+        if (saveDir != null) {
+            File(saveDir, "lv_" + count.toString().padStart(6, '0') + ".jpg").writeBytes(frame.jpeg)
+        }
+        val fps = count / ((System.nanoTime() - start) / 1e9).coerceAtLeast(0.001)
+        val rects = frame.rects().size
+        System.err.print("\r  frame $count: ${frame.jpeg.size / 1024} KB, %.1f fps".format(fps) +
+            (if (rects > 0) ", $rects AF/face box${if (rects > 1) "es" else ""}" else "") + "   ")
+        count < maxFrames
+    }
+    System.err.println()
+    println("stopped; $frames frames, camera back in rec mode")
 }
 
 private fun progressSink(label: String, write: (ByteArray, Int) -> Unit): ChunkSink {

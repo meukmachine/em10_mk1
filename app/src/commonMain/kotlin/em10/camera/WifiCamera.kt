@@ -168,6 +168,17 @@ class WifiCamera(
      */
     fun lastJpeg(sink: ChunkSink): Long = stream("exec_takemisc.cgi?com=getlastjpg", sink, DOWNLOAD_TIMEOUT_MS)
 
+    // --- live view (rec mode) ---
+
+    /** Start the MJPEG-over-UDP live-view stream to this host's [port] (docs/usb-protocol/liveview-udp.md). */
+    fun startLiveView(port: Int, size: LiveViewSize = LiveViewSize.SMALL) {
+        request("exec_takemisc.cgi?com=startliveview&port=$port&lvqty=${size.wire}")
+    }
+
+    fun stopLiveView() {
+        request("exec_takemisc.cgi?com=stopliveview")
+    }
+
     /**
      * The camera's review image of the last shot (rec mode). The camera waits up to 15 s for it to be
      * ready and hands each image out once, so the timeout here is longer. Whether a shot through
