@@ -211,3 +211,31 @@ and **clears the handle**, so each review image can be fetched once. With no ima
 client gave up after 10 s, before the camera's 15 s wait ended. Whether a shot through `exec_shutter`
 (shutter mode) produces a `RECVIEW COMP` at all is open; the app only uses `getrecview` after `starttake`.
 
+### First live run of the Kotlin client's shoot-and-save (C5, 2026-11-14)
+
+`em10 cam shoot --save shot --raw` (the Kotlin client, `Tethering`), camera on Wi-Fi, in **rec mode**. The
+`shoot()` press sequence (shutter mode: 1stpush, focus wait, 2ndpush, release) fired, then the client found
+the new files, saved the thumbnail, the full JPEG via `getlastjpg`, and the RAW.
+
+- **The camera was in sequential (burst) drive, so one shutter action left two frames on the card:**
+  `PB140002.JPG`+`.ORF` and `PB140003.JPG`+`.ORF` (four new files). The press sequence is unchanged; the
+  frame count is a drive-mode effect.
+- **`getlastjpg` returns only the single newest frame.** It gave 8 096 160 bytes — **byte-exact to the
+  card's `PB140003.JPG`** (the newest), not the first new file. The earlier burst frame is unreachable
+  through `getlastjpg`; it would need a per-path `get` download. So `getlastjpg` = "the most recent full
+  JPEG", one frame, and a burst drops its earlier frames from this path.
+- **The RAW (`.ORF`) was served in rec mode** — the plain `get` download succeeded with no HTTP 520, so the
+  play-mode fallback in `Tethering.downloadAnyMode` never triggered. This answers the open C5 question:
+  rec mode serves the ORF directly here; no mode switch was needed.
+- **Client bug found and fixed.** The client matched the thumbnail, output name and size-check against the
+  *first* new file (`PB140002`), while `getlastjpg` returns the *newest* (`PB140003`). Result: the saved
+  `shot/PB140002.JPG` held the `PB140003` image while `thumb_PB140002.jpg` was `PB140002`'s thumbnail — the
+  thumbnail and the full JPEG were different frames, and the saved JPEG carried the wrong name. The
+  size-mismatch note (`getlastjpg gave 8096160 bytes, the card lists 8144260`) was the symptom. Fixed in
+  `Tethering.shootAndSave`: pick the newest new `.JPG`/`.ORF` (the frame `getlastjpg` actually serves), name
+  the thumbnail and RAW after it, and emit a note when a shot leaves more than one frame (burst). A
+  single-frame shot was never affected.
+- **Timing:** both downloads ran in rec mode within the one command; the ~8 MB JPEG transfer is consistent
+  with the ~28 s seen for `getlastjpg` elsewhere. Saving all burst frames (not just the newest) is left as a
+  follow-up (C6/time-lapse and any burst-save feature).
+

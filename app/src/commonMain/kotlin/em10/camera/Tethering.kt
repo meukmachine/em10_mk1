@@ -45,13 +45,20 @@ class Tethering(private val camera: WifiCamera, private val pause: (Long) -> Uni
         camera.shoot(options.focusWaitMs)
         val newFiles = waitForNewFiles(before, options.appearTimeoutMs)
         onEvent(Event.NewFiles(newFiles))
-        val jpg = newFiles.firstOrNull { it.name.endsWith(".JPG", ignoreCase = true) }
-        val orf = newFiles.firstOrNull { it.name.endsWith(".ORF", ignoreCase = true) }
+        // getlastjpg serves only the newest frame on the card, so the thumbnail and RAW must track that
+        // same frame. A burst (sequential drive) leaves several new files; the earlier frames are not
+        // fetched here (getlastjpg cannot reach them — they would need a per-path download).
+        val jpg = newFiles.lastOrNull { it.name.endsWith(".JPG", ignoreCase = true) }
+        val orf = newFiles.lastOrNull { it.name.endsWith(".ORF", ignoreCase = true) }
         val saved = ArrayList<String>()
-        val first = jpg ?: orf ?: newFiles.first()
+        val frame = jpg ?: orf ?: newFiles.last()
+        val framesPerFile = if (orf != null) 2 else 1
+        if (newFiles.size > framesPerFile) {
+            onEvent(Event.Note("the shot left ${newFiles.size} new files (a burst); saving only the newest frame ${frame.name}"))
+        }
 
-        val thumbName = "thumb_" + first.name.substringBeforeLast('.') + ".jpg"
-        save(store, thumbName, onEvent) { sink -> camera.thumbnail(first.path).also { sink.write(it, it.size, it.size.toLong(), it.size.toLong()) }.size.toLong() }
+        val thumbName = "thumb_" + frame.name.substringBeforeLast('.') + ".jpg"
+        save(store, thumbName, onEvent) { sink -> camera.thumbnail(frame.path).also { sink.write(it, it.size, it.size.toLong(), it.size.toLong()) }.size.toLong() }
         saved += thumbName
 
         if (options.fullJpeg && jpg != null) {
