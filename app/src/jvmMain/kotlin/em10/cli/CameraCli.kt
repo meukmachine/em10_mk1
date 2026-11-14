@@ -120,7 +120,7 @@ private fun shoot(camera: WifiCamera, rest: MutableList<String>) {
         // The rec-mode path (takeready/starttake/stoptake) that keeps live view running. Start live
         // view in another window (or cam liveview) first to see that it survives the shot.
         camera.setMode(WifiCamera.Mode.REC)
-        camera.captureInRec(focusWait, driveMode = "normal")
+        camera.captureInRec(driveMode = "normal")
         println("picture taken via starttake; the camera stayed in rec mode")
         return
     }

@@ -171,25 +171,27 @@ class WifiCamera(
     }
 
     /**
-     * Take one picture **without leaving rec mode**, the way OI.Share's control (live-view) mode does:
-     * arm/focus with `takeready`, then `starttake` and `stoptake` over `exec_takemotion`. Unlike
-     * [shoot] (which goes through shutter mode and so kills the live-view stream), this keeps live view
-     * running. The camera must already be in rec mode.
+     * Take one picture **without leaving rec mode**, the way OI.Share's control (live-view) mode does
+     * on a 2.20 camera (E-M10 Mk I): a single `exec_takemotion.cgi?com=starttake`. The camera holds the
+     * HTTP response open until the exposure (and save) finish, so no `takeready`/`stoptake` and no
+     * client-side wait are needed for a normal frame. Unlike [shoot] (which goes through shutter mode
+     * and so kills the live-view stream), this keeps live view running. The camera must already be in
+     * rec mode.
      *
-     * [driveMode] is set first when given ("normal" for a single frame). [point] "XXXXxYYYY" sets the
-     * AF target before the shot (touch AF). [exposureMs] is how long to hold the take between start and
-     * stop — short for a normal exposure; a long hold is how bulb / live-time would work.
+     * [point] "<x>,<y>" sets the AF target for this shot (touch AF). [driveMode] is set first when
+     * given ("normal" for a single frame). [timeoutMs] is how long to hold the request open — long
+     * enough for the exposure plus save.
+     *
+     * A bulb / live-time / live-composite shot would instead hold `starttake&upperlimit=200` open and
+     * end it with a separate `stoptake` (not done here; docs/usb-protocol/oishare-app-behavior.md).
+     * Point format (comma vs `XXXXxYYYY`) is still to be confirmed on the camera.
      *
      * Confirmed on the E-M10 (2026-11-14): one picture, live view stayed on through the shot.
      */
-    fun captureInRec(focusWaitMs: Long = 2000, exposureMs: Long = 500, point: String? = null, driveMode: String? = null) {
+    fun captureInRec(point: String? = null, driveMode: String? = null, timeoutMs: Long = 30_000) {
         if (driveMode != null) setProperty("drivemode", driveMode)
         val pt = point?.let { "&point=$it" } ?: ""
-        request("exec_takemotion.cgi?com=takeready$pt")
-        pause(focusWaitMs)
-        request("exec_takemotion.cgi?com=starttake$pt")
-        pause(exposureMs)
-        request("exec_takemotion.cgi?com=stoptake")
+        request("exec_takemotion.cgi?com=starttake$pt", timeoutMs)
     }
 
     /**
