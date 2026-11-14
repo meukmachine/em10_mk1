@@ -27,6 +27,8 @@ research/emcam-probe-*.txt
 research/emcam-livetest*/
 emcam-livetest*/
 
-# camera output from em10 cam shoot --save (pictures stay uncommitted)
+# camera output from em10 cam shoot --save / liveview (pictures stay uncommitted)
 app/shot/
 shot/
+app/lv/
+lv/

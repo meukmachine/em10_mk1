@@ -140,6 +140,24 @@ Entry advance is `i = i + 4 + lenWords*4`; an unknown type is skipped by its `le
   equals **either** the type-1 size **or** the type-200 size; the `K` flag records which matched
   (type-200 ⇒ `K=true`), and `FF D8 … FF D9` bounds are still verified.
 
+## First live run of the Kotlin receiver (2026-11-14)
+
+`em10 cam liveview --save lv --frames 30` on the E-M10, built from this spec (`LiveViewParser`
+reassembly + `JvmUdpSocket` + `LiveView` orchestrator). It worked on the first camera run:
+
+- 30 frames captured, **19.3 fps** at the default `0320x0240`, ~7–8 KB per frame.
+- Every saved frame is a valid JPEG — `file` reports `JPEG image data, baseline, precision 8,
+  320x240, components 3`, each bounded `FF D8 … FF D9`. No dropped/out-of-order datagrams surfaced.
+- The 12-byte base header, the first-datagram extension skip (`16 + extCount*4`) and the strict
+  `prev+1` sequence rule all held; frames reassembled cleanly without the newer-variant 4-retry
+  resync. Small frames here fit one datagram each, so continuation handling was exercised only by
+  the unit tests, not this run.
+
+Still open: the extension **values** (the receiver parses the TLV into a type→words map and AF/face
+rectangles, but no AF box was present in this static scene, so the overlay path is untested live);
+and large-frame multi-datagram reassembly on the camera (try `--large`, a busier scene, or a longer
+run). Capturing one frame's raw extension block would confirm the `1 4 5 3 2 …` type list above.
+
 ## Minimal client (replacement)
 
 1. Bind UDP port P, send `startliveview&port=P`.
