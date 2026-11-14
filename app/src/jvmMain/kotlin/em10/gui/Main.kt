@@ -81,7 +81,7 @@ fun App() {
         busy = true
         status = "shooting…"
         Thread {
-            runCatching { camera.shoot() }
+            runCatching { camera.shoot(driveMode = "normal") }   // single shot, whatever the camera's drive mode
                 .onSuccess { status = "picture taken (on the card)" }
                 .onFailure { status = "shoot error: ${it.message}" }
             busy = false

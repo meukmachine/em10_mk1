@@ -60,7 +60,7 @@ class LiveView(
             while (running) {
                 val n = sock.receive(buffer)
                 if (n < 0) continue                           // timeout: loop and re-check running
-                val frame = parser.offer(buffer.copyOf(n)) ?: continue
+                val frame = parser.offer(buffer, n) ?: continue   // reuse the buffer, no per-datagram copy
                 frames++
                 if (!onFrame(frame)) break
             }

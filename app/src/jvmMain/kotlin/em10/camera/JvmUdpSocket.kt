@@ -7,7 +7,12 @@ import java.net.SocketTimeoutException
 
 /** JVM live-view UDP socket over java.net.DatagramSocket. */
 class JvmUdpSocket(port: Int, timeoutMs: Int) : UdpSocket {
-    private val socket = DatagramSocket(port).apply { soTimeout = timeoutMs }
+    private val socket = DatagramSocket(port).apply {
+        soTimeout = timeoutMs
+        // A big kernel receive buffer so datagrams survive a GC pause or a slow paint instead of
+        // being dropped (dropped datagrams show as a live-view stutter).
+        runCatching { receiveBufferSize = 4 shl 20 }
+    }
     override val localPort: Int get() = socket.localPort
 
     override fun receive(into: ByteArray): Int {

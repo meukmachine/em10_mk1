@@ -134,8 +134,16 @@ class WifiCamera(
      * Take one picture and leave the camera in rec mode with the button released: shutter mode, half
      * press, [focusWaitMs] for focus, full press, release both stages, [saveWaitMs], back to rec mode.
      * The commands only press the button: whether the camera fires is up to its focus and settings.
+     *
+     * [driveMode] (e.g. "normal" for single, "continuous-L"/"continuous-H" for burst) is set first
+     * when given: a continuous drive leaves several frames per shutter action, so pass "normal" for
+     * exactly one picture. Null leaves the camera's current drive mode alone.
      */
-    fun shoot(focusWaitMs: Long = 2000, saveWaitMs: Long = 1500) {
+    fun shoot(focusWaitMs: Long = 2000, saveWaitMs: Long = 1500, driveMode: String? = null) {
+        if (driveMode != null) {
+            setMode(Mode.REC)
+            setProperty("drivemode", driveMode)
+        }
         setMode(Mode.SHUTTER)
         val pressed = ArrayList<ShutterStep>()
         var primary: Throwable? = null

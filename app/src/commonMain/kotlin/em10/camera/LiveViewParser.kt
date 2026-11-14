@@ -56,8 +56,14 @@ class LiveViewParser(private val onDrop: (String) -> Unit = {}) {
 
     val framesInProgress: Boolean get() = buffer != null
 
-    fun offer(datagram: ByteArray): LiveViewFrame? {
-        if (datagram.size < 12) { onDrop("short datagram (${datagram.size} bytes)"); return null }
+    fun offer(datagram: ByteArray): LiveViewFrame? = offer(datagram, datagram.size)
+
+    /**
+     * Feed the first [size] bytes of [datagram] (the rest is ignored), so the receive loop can reuse
+     * one buffer instead of copying each datagram.
+     */
+    fun offer(datagram: ByteArray, size: Int): LiveViewFrame? {
+        if (size < 12) { onDrop("short datagram ($size bytes)"); return null }
         val flags0 = datagram[0].toInt() and 0xff
         val flags1 = datagram[1].toInt() and 0xff
         val seq = be16(datagram, 2)
@@ -66,10 +72,10 @@ class LiveViewParser(private val onDrop: (String) -> Unit = {}) {
 
         val payloadStart: Int
         if (first) {
-            if (datagram.size < 16) { onDrop("short first datagram (${datagram.size} bytes)"); return null }
+            if (size < 16) { onDrop("short first datagram ($size bytes)"); return null }
             val extCount = be16(datagram, 14)
             payloadStart = 16 + extCount * 4
-            if (payloadStart > datagram.size) { reset(); onDrop("extension block runs past datagram"); return null }
+            if (payloadStart > size) { reset(); onDrop("extension block runs past datagram"); return null }
             buffer = ByteArray(INITIAL_CAPACITY)
             length = 0
             firstSeq = seq
@@ -81,7 +87,7 @@ class LiveViewParser(private val onDrop: (String) -> Unit = {}) {
             payloadStart = 12
         }
         sequence = seq
-        append(datagram, payloadStart)
+        append(datagram, payloadStart, size)
 
         if (!last) return null
         val jpeg = buffer!!.copyOf(length)
@@ -95,8 +101,8 @@ class LiveViewParser(private val onDrop: (String) -> Unit = {}) {
         return LiveViewFrame(jpeg, seqOut, tsOut, extOut)
     }
 
-    private fun append(src: ByteArray, from: Int) {
-        val add = src.size - from
+    private fun append(src: ByteArray, from: Int, end: Int) {
+        val add = end - from
         if (add <= 0) return
         var buf = buffer!!
         if (length + add > buf.size) {
@@ -105,7 +111,7 @@ class LiveViewParser(private val onDrop: (String) -> Unit = {}) {
             buf = buf.copyOf(cap)
             buffer = buf
         }
-        src.copyInto(buf, length, from, src.size)
+        src.copyInto(buf, length, from, end)
         length += add
     }
 
