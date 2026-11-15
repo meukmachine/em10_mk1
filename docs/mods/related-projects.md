@@ -78,7 +78,8 @@ explicit nulls); 536 of the 731 `A()` address-reference sites the emulator sourc
 resolve — 73.3%.** `A()` is live and consuming the table (e.g. the resource loader resolves concrete
 E113 addresses).
 
-**Part 2 — fact rules now fixed; a deeper engine wall remains (2026-11-15, corrected).** The earlier
+**Part 2 — fact rules fixed; the "engine wall" was a one-function bug, now fixed, E113 runs (2026-11-15,
+corrected twice — see Part 2b below for the retraction of the "architectural wall" claim).** The earlier
 "9 device facts fail / `coreByte` finds zero because 2014 codegen uses a register-held base" writeup was
 **wrong on both counts** and is retracted:
 
@@ -103,31 +104,45 @@ E113 addresses).
 With those two edits `readFacts` completes end-to-end on E113 (31 top-level fact keys) with no
 regression on E120 (34 keys, `core_byte=0x8ff00188`) or E143.
 
-**The real blocker is architectural, below the fact layer: E113 runs its main code in place from a high
-window, which OM-Emu's memory model does not represent.** OM-Emu assumes the run-time code image is
-**relocated into DRAM**: `createMachine` (machine.mjs:205) hard-asserts `IMAGE_BASE` lies in
-`0x60000000 .. 0x60000000+dramBytes`, and `expandImage`/`relocate` (expand.mjs:38) builds **one flat
-buffer growing upward from `base`**, placing each preload row at `to - base`.
+**Part 2b — the "architectural wall" claim is ALSO retracted (2026-11-15): E113 runs; the blocker was a
+one-function bug, not the memory model.** The earlier conclusion here — that E113 needs a
+*sparse / multi-region* memory model and that this is a "substantial engine change" — was **wrong**, and
+the arithmetic disproves it:
 
-- E143/E120 satisfy this — their code base is `0x60021020` and their preload/DRAM data sits just above
-  it (E120 data at `0x61xxxxxx`), all inside the one window.
-- **E113 does not.** Its verified code base is `0x7d991020` (reset entry `0x7d991114`; 2315/3000 string
-  pointers resolve against it), but its preload DRAM destinations are `0x60000fe0`, `0x6044a140`,
-  `0x6047e140`, `0x60486140` and its boot-copied library window is `0x47000000` — all **far below** the
-  code base. `to - base` goes negative → `RangeError` in `relocate`, and `IMAGE_BASE` fails the DRAM
-  bounds assert. Both symptoms are the same root fact: **E113 (a 2014 body) executes code in place from
-  `0x7d99xxxx`; the newer bodies OM-Emu supports relocate code down into `0x60xxxxxx` DRAM.**
+- OM-Emu's DRAM region is 512 MiB (`DRAM_MAX`). E113's code base `0x7d991020` sits at DRAM offset
+  `0x1d991020` = **473.6 MiB**; the 18 MiB code block ends at **491.6 MiB**, comfortably inside one
+  512 MiB DRAM. E113's layout is the ordinary **code-high / data-low** arrangement, not an unsupported
+  topology — the whole run-time image fits in the single DRAM region the engine already has.
+- The **only** real bug was `relocate()` (expand.mjs) folding *below-base* preload rows into an
+  image-base-anchored buffer: `to - base` went negative → `RangeError`. The preload rows at
+  `0x60000fe0 / 0x6044a140 / 0x6047e140 / 0x60486140` are **DRAM data, not code** — no byte-pattern rule
+  reads them from the code image — so the fix is to **skip** them in `relocate()` (they stay at/above
+  base for every older body, so zero regression) and write them into DRAM **directly** in `createMachine`
+  (machine.mjs, after the image copy), each at `DRAM_OFF + (to - 0x60000000)`.
 
-So the honest state of Goal #2: **the fact-rule layer is fixed and verified, but E113 cannot actually
-run in OM-Emu without a sparse / multi-region memory model** (code high at `0x7d99xxxx`, data low at
-`0x6000xxxx`/`0x4700xxxx`). That is a substantial engine change, not a port-table gap — and it is why
-E113 was shipped as "surveyed, not tried." We did **not** fabricate a passing modelcheck.
+With those two edits (≈15 lines total) **E113 runs the full fact pipeline**: `bin/test-pure.mjs` reports
+`purity: 255/255` and firmware-facts went from a hard E113 crash to **253/266** — E113 now executes
+every rule instead of aborting. The IMAGE_BASE DRAM assert passes; the RangeError is gone.
+
+**Honest state of Goal #2 now:** the memory-model blocker is **resolved**; the remaining 13 firmware-fact
+failures are **per-body port calibration**, not an engine wall:
+- ~8 are cross-build **map-vs-rule** mismatches (the byte-pattern rule scans E113's own bytes and finds
+  the ground truth; the approximate E143→E113 address map `A()` disagrees) — fixed by
+  `MODELS.E113.overrides` pinning the map to the rule's verified reading, the intended port workflow.
+- ~4 are **golden-table (FOUND) entries** the rule reads from E113 but no E113 row records yet (vsc
+  levels, errlog entry, remaining-shots query, card-detect table) — recorded from the rule's verified
+  reading, each sanity-checked (e.g. card detect `drives: 1` matches the E-M10's single SD slot).
+- 1 is a genuine **rule under-detection**: `lens.mount` returns `false`, but the E-M10 physically has a
+  Micro Four Thirds mount — the 2014 build's mount-detect form isn't matched by the rule yet (real RE,
+  like `core_byte`/`dcfCounts` before it).
+- `dbSave` (settings-DB flash-save) throws in `readPlacedFacts` because the map mis-places E113's DB-init
+  — pending either the real E113 address or an honest deferral, like `core_byte`.
 
 Scope note: even a finished port **cannot validate a real flash-to-SD dump** — the emulator's NAND and
 card are stand-ins. Its value here is tracing a patch's hook/read/write *logic*, not the dump itself.
-The fixed `facts.mjs` (vendored, gitignored copy), the generated table, the generator, the calibration
-diagnostic (`mapdiag.mjs`) and a pre-port backup of `ports.mjs` are kept in gitignored
-`research/om-emu-src/`.
+The fixed `facts.mjs`/`expand.mjs`/`machine.mjs` (vendored, gitignored copies), the generated table, the
+generator, the calibration diagnostic (`mapdiag.mjs`) and a pre-port backup of `ports.mjs` are kept in
+gitignored `research/om-emu-src/`.
 
 ## omcap — `github.com/HolmHaensel/omcap` (GPL-3)
 Wi-Fi and USB tethering for the E-M1 Mark I. Covered in `../usb-protocol/wifi-api.md`.
