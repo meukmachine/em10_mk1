@@ -112,11 +112,31 @@ index arg. From the **very first** call it returns `0xbfd2a000` (a non-heap garb
 valid lookup would be in `0x60000000-0x60800000`). So the registry those map ops consult is
 empty/uninitialized in the lab, and the lookup falls through to a garbage slot instead of null.
 
-NOT YET ROOT-CAUSED: the task is to find which subsystem init populates that type-registry
-(entries under type-id `0x1020b`) and run it natively in the E113 bring-up — a genuine, larger
-HLE gap than Wall A (a whole registry rather than one init function). Note observe-hooking the
-`calls` site itself perturbs control flow (the lab's pass-through hook on a `calls` loops), so
-inspect on straight-line instructions after the return (e.g. `0x509af719 cmp 0,a2`).
+Following the call chain down (the `0x1020b` sites are an sdk-api trace channel, not the
+registry key — the lookup is the un-traced path):
+
+```
+CameraCommon 0x509af647 (0x7e34)
+  -> sdk-api method   0x5069e3dd (0x7e02)   [0x1020b trace-wrapped]
+    -> api_tft lookup 0x502140cc (0x7dba)   [0x7dc8… trace-wrapped]
+      -> display-drv  0x501d59fc (0x7db6)   returns a0; caller does `mov (a0),a0; ret`
+         => *(a0) = 0xbfd2a000  (the garbage that propagates up and is dereffed)
+```
+
+So the lookup bottoms out in the **display driver** (bank 0x7db6, runtime `0x7db6ba1c`): a table
+whose entry (or the slot `0x501d59fc` returns a pointer into) is garbage because the lab's E113
+bring-up never populates it. **This is the same subsystem as Wall B** — Wall B's `0x6055f944`
+geometry global and OSD-guard geometry, and Wall C's display-driver table, are all left
+unset/garbage by the **E113 display init that is not (fully) ported**. The leading root remains
+`FACTS.E113.display.sync` null + E113's third, unported display-sync API form
+(`api_disp_Disp_Sync_Update_Osd` / `api_disp_Disp_Sync_Force_Update`; see
+`memory/e113-boot-wall3.md`). Porting that one display-sync form is the single change that
+plausibly clears **both** the menu (Wall C) and the EVF (Wall B) paths — the highest-leverage
+next task.
+
+Probe notes: scratchpad/wallc.mjs uses `NavSession.lab_created` observe-hooks. Observe-hooking
+the `calls` site itself perturbs control flow (the lab's pass-through hook on a `calls` loops),
+so inspect on straight-line instructions after the return (e.g. `0x509af719 cmp 0,a2`).
 
 ## Wall B — the EVF wall: divu-by-zero then OSD GUARD (downstream)
 
