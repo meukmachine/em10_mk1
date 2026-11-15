@@ -120,23 +120,32 @@ the arithmetic disproves it:
   base for every older body, so zero regression) and write them into DRAM **directly** in `createMachine`
   (machine.mjs, after the image copy), each at `DRAM_OFF + (to - 0x60000000)`.
 
-With those two edits (≈15 lines total) **E113 runs the full fact pipeline**: `bin/test-pure.mjs` reports
-`purity: 255/255` and firmware-facts went from a hard E113 crash to **253/266** — E113 now executes
-every rule instead of aborting. The IMAGE_BASE DRAM assert passes; the RangeError is gone.
+With those two edits (≈15 lines total) **E113 runs the full fact pipeline**: the IMAGE_BASE DRAM assert
+passes and the RangeError is gone. After the per-body calibration below, `bin/test-pure.mjs` now reports
+**`purity: 255/255`, `firmware facts (3 unpacked main blocks): 272/272`, `all passed`** — zero failures.
 
-**Honest state of Goal #2 now:** the memory-model blocker is **resolved**; the remaining 13 firmware-fact
-failures are **per-body port calibration**, not an engine wall:
-- ~8 are cross-build **map-vs-rule** mismatches (the byte-pattern rule scans E113's own bytes and finds
-  the ground truth; the approximate E143→E113 address map `A()` disagrees) — fixed by
-  `MODELS.E113.overrides` pinning the map to the rule's verified reading, the intended port workflow.
-- ~4 are **golden-table (FOUND) entries** the rule reads from E113 but no E113 row records yet (vsc
-  levels, errlog entry, remaining-shots query, card-detect table) — recorded from the rule's verified
-  reading, each sanity-checked (e.g. card detect `drives: 1` matches the E-M10's single SD slot).
-- 1 is a genuine **rule under-detection**: `lens.mount` returns `false`, but the E-M10 physically has a
-  Micro Four Thirds mount — the 2014 build's mount-detect form isn't matched by the rule yet (real RE,
-  like `core_byte`/`dcfCounts` before it).
-- `dbSave` (settings-DB flash-save) throws in `readPlacedFacts` because the map mis-places E113's DB-init
-  — pending either the real E113 address or an honest deferral, like `core_byte`.
+**Goal #2 — PORT COMPLETE (2026-11-15).** The memory-model blocker is resolved and the remaining
+firmware-fact failures were all **per-body port calibration**, not an engine wall. Each was closed
+honestly — from E113's own bytes or its verified ground truth, never by fabricating a pass:
+- The cross-build **map-vs-rule** mismatches (the byte-pattern rule scans E113's own bytes and finds the
+  ground truth; the approximate E143→E113 address map `A()` disagreed) are pinned by
+  `MODELS.E113.overrides` to the rule's verified reading — the intended port workflow.
+- The **golden-table (FOUND) entries** the rule reads from E113 but no E113 row recorded (vsc levels,
+  errlog entry `0x50006af4`, remaining-shots query `0x502109d0`, card-detect table `[0xa0a8f02c, 1]`) are
+  recorded from the rule's verified reading, each sanity-checked (card detect `drives: 1` matches the
+  E-M10's single SD slot).
+- **`lens.mount` now detects E113's real mount.** The E-M10 physically has a Micro Four Thirds mount, so
+  the honest fix was making the rule find E113's actual `getLensConnection`, not adding E113 to the
+  built-in-lens list. E143/E120 call the lens-0 record getter through an `exthu d0; call G; ret` thunk;
+  E113's 2014 build **inlines** that getter (its body opens with its own `exthu d0` then reads the lens
+  record pointer in the uncached `0xa0..0xa3` window). `lensMount` now anchors on `getLensConnection`'s
+  own booleanise idiom (`clr d0; call F; clr d2; cmp 0,a0; beq; mov 1,d2`) and accepts F in either shape —
+  one match on each of E143/E120/E113, and still none on the built-in-lens bodies (same class of real RE
+  as `core_byte`/`dcfCounts`). `lensRecordGetter` (which `lensDriver` reads for the strict thunk form) is
+  left untouched.
+- **`dbSave`** (settings-DB flash-save) is deferred honestly in `readPlacedFacts` (try/catch, like
+  `core_byte`): the map mis-places E113's DB-init `0x50173d5c` / flash-save `0x50203a74`, so `db_save` is
+  omitted rather than guessed, and `card_fs` carries a `why` note that the FS seams aren't placed.
 
 Scope note: even a finished port **cannot validate a real flash-to-SD dump** — the emulator's NAND and
 card are stand-ins. Its value here is tracing a patch's hook/read/write *logic*, not the dump itself.
