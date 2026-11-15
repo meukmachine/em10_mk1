@@ -404,6 +404,28 @@ stride and dst-high field positions (and bit22's role) so a depth-5 fill at stri
 `DRV_CMDBUF`) disassembled — genuinely multi-session, but now pinned to one decode question rather than an
 open-ended geometry hunt.
 
+**Decode is self-consistent — two candidate roots (2026-11-15).** Reading the full `cmdFill` (`engine.mjs:98`) and
+re-deriving the four words with the engine's own `sizeM1`/stride formulas confirms the depth-5 decode is internally
+coherent: the firmware genuinely draws 544 px and 2048 px surfaces at **4 bytes/pixel** (`width*4 == stride` for the
+two full-surface fills). So the words are not mis-decoded garbage; the firmware means exactly what it says. That
+narrows the EVF stop to two testable hypotheses, neither cheaply decidable without more evidence:
+
+1. **`guarded()` is too strict.** `engine.mjs:91` requires an **exact `stride === gstride`** match. The real OSD
+   engine's surface guard may instead be a **base+size range** check. Stride-exact matching holds for the depth-3
+   reference bodies (one stride per plane) but breaks when E113 issues **multiple strides** (8192, 5632, 5504, 2176)
+   into the same plane. If real HW range-checks only, these fills are in-bounds and pass. Relaxing this is a
+   model-gated **design change** with regression risk and is **unverifiable** until the rest of the E113 boot runs,
+   so it is not made now — it is recorded as the leading hypothesis to test once a second signal is available.
+2. **dst high-bits differ at depth 5.** The fills decode to `0x80xxxxxx` (`hiDst = w0 & 0x60000000` = 0 for
+   `w0=0x510`); the guards sit at `0xBDxxxxxx`. Depth 5 may source the address-high bits from a different field than
+   depth 3. No bit combination of `w0`/`w[2]` tried so far maps `0x80aa42c0` onto a `0xBD…` guard, so this needs the
+   emitter's address computation, not guesswork.
+
+Deciding between these needs the firmware's OSD setup/emitter disassembled (how it computes the plane base/stride it
+*registers* vs. the base/stride it *draws*), or a hardware-side observation of the engine's guard behaviour — both
+out of scope for a single session. The depth-5 **format gate** remains in and regression-free; the guard reconcile
+is the open, now-well-posed task.
+
 **Honest status:** registry init, property-store init, the settings-DB store wall (Wall 1) **and** the
 device-open PER_SIO-serial wall (Wall 2) all pass and are regression-free (test-pure 273/273, purity 255/255;
 E143 tft `state=264`, E120 tft/EVF `state=264`). Both E113 paths now reach the first UI draw (`H-UIIN`). The EVF
