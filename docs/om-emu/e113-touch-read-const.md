@@ -1,70 +1,93 @@
 # OM-Emu E113 — the touch-panel read length is a constant, not register `a1`
 
-Scope: OM-Emu HLE lab, the touch-panel (I2C, slave `0x48`) read stand-in. This documents a
-measurement trap in the auto-port's `touch_args` fact and the `{ const: N }` escape hatch added
-to handle it. It is **off the current boot/menu-draw critical path** (touch is exercised only on
-a touch input, not during boot or the first UI draw), and — see **Current status** — the fact is
-**not applied in `ports.mjs` right now**. It is recorded here so the mechanism and the reason are
-not lost across re-ports.
+Scope: OM-Emu HLE lab, the touch-panel I2C register-read stand-in. This documents a measurement
+trap in the auto-port's `touch_args.read_len` fact, the `{ const: N }` shape that fixes it, and the
+`touchReadConst` detector that now derives it automatically. The fix **is applied** (E113's
+`ports.mjs` block and the E143 reference); see **Current status**.
 
 ## Background — how the lab models a touch read
 
 `src/lab/display.mjs` stands in for the touch driver's I2C transport (the real transfer's
-completion IRQ is not modelled on the E118-family board). On a hooked touch read it needs two
-things from the caller's registers/stack:
+completion IRQ is not modelled on this board). On a hooked touch read it needs two things from the
+caller's registers/stack:
 
 - **the destination buffer** — register `a0` on every body, and
 - **the byte count to copy into it** — the `touch_args.read_len` fact.
 
 `tpLength(lab, r, which)` reads that length. The fact is produced per-model by the auto-port
-(`src/fw/facts.mjs` `touchArgs`), which *measures* where the firmware's touch-read helper takes
-its length argument. Known good shapes:
+(`src/fw/facts.mjs` `touchArgs`/`touchLength`), which *measures* where the firmware's touch-read
+helper takes its length. Shapes:
 
-- `{ sp: N }` — the length is at `sp+N` (E143's read; the E144 driver's read at `sp+40`).
-- `{ reg: "a1" }` — the length is in register `a1`.
-- `{ const: N }` — a **fixed** byte count, no argument. (The escape hatch; see below.)
+- `{ sp: N }` — the length is a u16 the caller passed at `sp+N` (the write side; the E144 driver's
+  read at `sp+40`).
+- `{ const: N }` — a **fixed** byte count baked into the helper, no argument.
+- `{ reg: "a1" }` — fallback: the length is assumed to be in register `a1`. **On this family that
+  assumption is wrong** (see below); it is retained only for bodies whose read helper the detector
+  cannot see (no local image to re-port).
 
-## The trap
+## The trap — `a1` is the I2C register, not a length
 
-Some E118-family bodies implement the touch-register read with a helper that copies a **constant**
-number of bytes into the caller's destination — the count is baked into the helper, not passed in.
-`touchArgs()`'s structural measure cannot see a constant, and for that shape it mis-measures the
-length as `{ reg: "a1" }`.
+The touch register-read helper copies a **constant** number of bytes into the caller's small
+response buffer. `a1` at entry is the **I2C register / transfer handle**, not a byte count. Two
+bodies, disassembled, both show this exact shape:
 
-That is wrong, and dangerously so: on this helper `a1` holds the **internal I2C bus transfer
-count**, not the destination length. The bus count is larger than the caller's small destination
-buffer, so the stand-in copies too many bytes and **overruns the caller's dest** — corrupting
-whatever sits after it on the stack/heap, with knock-on faults far from the touch read.
+- **E113** `0x5022ba06` (runtime `0x7dbbca26`): entry `mov a0,a3` (save caller dest), `mov a1,a2`;
+  later `cmp 255,a2` — `a1` is a **register selector** compared to `0xFF`. Tail:
+  `mov a3,a1; mov 4,d0; mov 1,d1; call 0x5005215d` → copies **4** bytes to the caller dest.
+- **E143** `0x501e4f2a`: entry `mov a0,a3`, `mov a1,a2`; `a2` is stored into the transfer
+  descriptor (`mov a2,d2; … mov d2,(4,sp)`) — again a **handle**, not a length. Tail:
+  `mov a3,a1; mov 5,d0; mov 1,d1; call 0x500538bf` → copies **5** bytes.
 
-## The fix — `{ const: N }`
+The old `touchArgs` could not see a baked-in constant, so for this shape it fell back to
+`{ reg: "a1" }`. That is wrong family-wide — `a1` is never the length here. It was only ever
+*tolerated* because most bodies' `a1` happened to be small. On E113 `a1` is `0x14` (20), far larger
+than the 4-byte dest: the stand-in's `_i2c_read` then wrote 20 zero bytes over the caller's stack
+frame, **zeroing its return address** and crashing the TFT boot at `pc=0` (`fault=3` misaligned).
 
-`tpLength()` honours a `{ const: N }` fact by returning `N` directly, before the `reg`/`sp`
-branches:
+## The fix — `{ const: N }`, derived automatically
 
-```js
-// src/lab/display.mjs, tpLength()
-if (at.const != null) return at.const & 0xFFFF;
-return at.reg ? r[at.reg] & 0xFFFF : u16(lab.sim.read(r.sp + at.sp, 2), 0);
-```
+Two parts, both in the fork:
 
-For a body whose touch-read helper copies a fixed count, the model carries
-`touch_args: { …, read_len: { const: <bytes> }, … }` by hand, overriding the auto-port's wrong
-`{ reg: "a1" }`. This is a measured, model-scoped override, not a blanket change — bodies that
-genuinely pass the length in `a1` or on the stack keep their measured shape.
+1. **`tpLength()` honours `{ const: N }`** (returns `N` directly, before the `reg`/`sp` branches):
+   ```js
+   // src/lab/display.mjs, tpLength()
+   if (at.const != null) return at.const & 0xFFFF;
+   return at.reg ? r[at.reg] & 0xFFFF : u16(lab.sim.read(r.sp + at.sp, 2), 0);
+   ```
+2. **`touchReadConst(img, fn)`** (`src/fw/facts.mjs`) detects the fixed-copy shape — save of the
+   caller dest `mov a0,aN` at entry, then `mov aN,a1; mov <imm>,d0; … call <copy>` — and returns the
+   immediate. `touchLength` returns `{ const: N }` when that shape is present on a read helper,
+   falling back to `{ reg: "a1" }` only when it is not. This makes the correct length **derived by
+   the port**, not a hand override, so a re-port can no longer silently revert it.
 
-## Current status (2026-11-15)
+The read's destination-address fact (`read_addr`, the `S-TPREG` path) stays `["d1"]` for the
+single-register read, as before.
 
-- The `{ const: N }` branch **is** in `src/lab/display.mjs` (fork working tree).
-- The **E113 entry in `src/fw/ports.mjs` currently carries no `touch_args` / `touch_panel` block
-  at all** — the latest re-port dropped it. So the `{ const: 4 }` override is **not applied**, and
-  the `{ const: N }` branch is presently dormant for every model.
-- This is acceptable for now because touch is **not** on the boot/first-UI-draw path, where E113
-  currently stops (Wall 3 — the OSD depth-5 draw and the TFT wild-jump; see
-  `../mods/related-projects.md`). The touch read-length only matters once the menu is driven by
-  touch input.
+## Current status (2026-11-15) — APPLIED
 
-**When touch comes back onto the exercised path**, re-add E113's touch block to `ports.mjs` and
-**re-measure** `read_len` against the current re-ported address map rather than pasting the old
-value — confirm the touch-read helper and its fixed byte count in E113's own image before trusting
-`{ const: 4 }`. A re-port silently reverting a hand `touch_args` override has already happened once;
-treat it as expected and re-verify, do not assume.
+- `src/lab/display.mjs` has the `{ const: N }` branch.
+- `src/fw/facts.mjs` has `touchReadConst`; `touchLength` emits `{ const: N }` for the fixed-copy
+  read shape.
+- **E113** `ports.mjs` carries `touch_args: { read_len: { const: 0x4 }, read_addr: ["d1"] }`
+  (regenerated by `node bin/port.mjs E113`, auto-derived). The **write** length
+  `touch_args: { write_len: { sp: 152 } }` is hand-supplied in `models.mjs` because that load is a
+  32-bit `mov (152,sp),d2` (opcode `0x5a`) which `touchLength` does not scan — a trace-fidelity
+  fact (the write only reads those bytes for the I2C log), not a crash fix.
+- **E143** reference `TOUCH_ARGS_E143.read_len` updated `{ reg: "a1" }` → `{ const: 5 }` to match
+  what its own read helper actually copies. This is the model-faithful value; `{ reg: "a1" }` was a
+  tolerated mis-measurement.
+
+### Verification
+
+- `node bin/port.mjs E113` → E113 `read_len { const: 4 }`.
+- `node test/test_facts.mjs` → `facts: 273/273` (E143 now expects/derives `{ const: 5 }`).
+- `node test/test_touch.mjs` → `touch in play: 7/7`.
+- `node bin/checks.mjs` (golden E143 lab) regression-free.
+
+## Effect on the boot wall
+
+The fix advanced the **TFT** boot from the early `pc=0x8010` misaligned fault all the way to
+`H-UIIN start` — i.e. it converges with the pre-existing EVF/OSD **Wall 3** (OSD depth-5 draw-
+address computation + the `divu`-by-zero at `0x7d9962c0`). Touch length was a genuine crash on the
+TFT path; it is now off the table. The remaining wall is display surface-geometry, tracked in
+`../mods/related-projects.md`.

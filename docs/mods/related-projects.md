@@ -285,10 +285,14 @@ above is now implemented and measured (`models.mjs` `MODELS.E113`, `menu.mjs`, `
   `E_PAR`; 14 (= `lab_pri`) is the valid analogue.
 - Supporting measured facts for the same bring-up: `board.buswin_pads: true` (the flash library's RMW on the
   `0x98100000` pad registers at offsets 0x00/0x04/0x08/0x10), `dial { table_ptr: null, table0: 0x7dbc0de0 }` +
-  the `0x5014b7c7→0x500f9774` DIAL_INIT code-map override (E113's single-fixed-table dial init). A
-  `touch_args.read_len { const: 4 }` escape hatch exists in `display.mjs` for the touch-read overrun but is
-  **not currently applied** (the re-port dropped E113's touch block; it is off the boot path — see
-  `../om-emu/e113-touch-read-const.md`).
+  the `0x5014b7c7→0x500f9774` DIAL_INIT code-map override (E113's single-fixed-table dial init). The
+  `touch_args.read_len { const: 4 }` fact is now **applied and auto-derived**: `touchReadConst`
+  (`facts.mjs`) measures the touch read's fixed-count copy, so E113's `ports.mjs` carries
+  `read_len { const: 4 }` and the E143 reference is corrected to `{ const: 5 }` (both reads bake the
+  count in; `a1` is the I2C register, not a length — the old `{ reg: a1 }` was a tolerated
+  mis-measure that overran the TFT caller's stack at `a1=0x14`). This cleared the early TFT
+  `pc=0x8010` fault, so the TFT path now converges with EVF at Wall 3 — see
+  `../om-emu/e113-touch-read-const.md`.
 
 With these, **both E113 paths now pass the device open** and reach the first UI draw (`H-UIIN`).
 
