@@ -352,9 +352,16 @@ raises `DEPTH`/`WORD_BITS` — the fills are admitted, and the `divu` divisor ad
 fault shows zero active slots), and their targets (bus `0x04ee2dc`, `0x05602dc`, `0x09f1640`, … at strides 8192
 / 5632 / 5504 / 2176) sit in no backed bus range either. So E113's EVF framebuffer **surface geometry is not
 modelled** — the lab's native init never set up E113's panel surfaces/guards (E113 carries no `gui`/surface fact;
-the port takes E143's canvas, whose stride 1664 matches none of E113's). That is the next, distinct RE task: find
-where E113's EVF surfaces live (bus region + stride) and register them. The depth-5 format question is **closed**;
-the surface-geometry question is **open**. The TFT wild-jump is still its own separate CPU-control-flow bug.
+the port takes E143's canvas, whose stride 1664 matches none of E113's). The contrast with E120 (clean EVF) is
+sharp and points past a mere missing registration to a different OSD pipeline: a guard-slot dump on E120 at a
+clean frame shows **7** lab-registered guards at bus `0xBFxxxxxx`, **stride 896, 1 byte/pixel** indexed surfaces
+(896-px wide); E113's fills instead target **stride 8192, 2048-px wide, 4 bytes/pixel** (depth 5) at bus offsets
+`0x04ee2dc`+ whose decoded high bits are zero (vs E120's `0xBF…`). So E113 uses a wider, deeper OSD surface set
+at a different bus region, and possibly a different dst-high-bit encoding in the depth-5 command word (the current
+ENC2 `hiDst = w0 & 0x60000000` yields `0x80…`, not `0xBF…`/`0xA0…`). That is the next, distinct RE task: pin
+E113's EVF surface bases/strides (and confirm the depth-5 word's address-field layout), then register them. The
+depth-5 **format** question is **closed**; the **surface-geometry** question is **open**. The TFT wild-jump is
+still its own separate CPU-control-flow bug.
 
 **Honest status:** registry init, property-store init, the settings-DB store wall (Wall 1) **and** the
 device-open PER_SIO-serial wall (Wall 2) all pass and are regression-free (test-pure 273/273, purity 255/255;
