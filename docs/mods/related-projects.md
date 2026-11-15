@@ -181,7 +181,7 @@ E113's remaining per-model fact subsystems (`ae`, `api`, `crt`, `media`, `rec_fi
 …), each either measured from E113's bytes (as `prop`/`evf_code` were) or carried from its E120 sibling —
 substantial further RE. CPU-level execution and inspection work **today**.
 
-### HLE lab bring-up — how far the full menu boots, and the two walls (2026-11-15)
+### HLE lab bring-up — how far the full menu boots, and the walls (2026-11-15)
 Goal of this pass: run the **full HLE lab** (`src/lab/menu.mjs` `PlayLab`, the path `modelcheck`/scenario
 tests drive) under `OM_EMU_MODEL=E113` far enough that the menu is usable. The lab boots the reference
 body's own init functions natively, located through the E143→E113 address map, and asserts each subsystem's
@@ -274,10 +274,55 @@ also answers loop-pacing waits that must block (observed: "more than 200000 stub
 implementing: whether the queue-73 worker must do real work (e.g. advance a panel state the later menu reads)
 or whether completing instantly suffices — to be checked by whether the post-open menu pixels/count-probe pass.
 
-**Honest status:** registry init, property-store init and the settings-DB store wall (Wall 1) pass and are
-regression-free (test-pure 273/273, purity 255/255; E143 tft `state=264`, E120 tft/EVF `state=264`). Both E113
-paths reach and stop at the device-open PER_SIO-serial wall (Wall 2), pinned above to the exact queue, flags and
-call sites. `modelcheck E113` / fully-usable menu is **not** reached yet. No result was fabricated.
+**Wall 2 — CLEARED by the PER_SIO panel-serial stand-in (fork working tree, uncommitted).** The fix direction
+above is now implemented and measured (`models.mjs` `MODELS.E113`, `menu.mjs`, `nav.mjs`, `display.mjs`):
+- `extra_dropped_sends: [[73, null, null]]` — every synchronous queue-73 serial-command send is dropped (logged
+  to `dropped_sends`, answered `d0=0`), since queue 73 is the PER_SIO serial worker's input queue and that worker
+  is not modelled. Matching the queue id alone is correct (the open sends several cmds from adjacent PER_SIO sites).
+- `display.panel_flag: 0x7d9b056e` — `S-PANELDONE` now answers the open's completion wait on **flag 138** (the
+  word measured in E113's own image), not the map's default `PANEL_FLAG` id 108, which E113's open never waits on.
+- `nav_pri: 14` and `lab_pri: 14` — E113's µITRON has only 16 priority levels, so E143's `NAV_PRI = 50` returns
+  `E_PAR`; 14 (= `lab_pri`) is the valid analogue.
+- Supporting measured facts for the same bring-up: `board.buswin_pads: true` (the flash library's RMW on the
+  `0x98100000` pad registers at offsets 0x00/0x04/0x08/0x10), `dial { table_ptr: null, table0: 0x7dbc0de0 }` +
+  the `0x5014b7c7→0x500f9774` DIAL_INIT code-map override (E113's single-fixed-table dial init). A
+  `touch_args.read_len { const: 4 }` escape hatch exists in `display.mjs` for the touch-read overrun but is
+  **not currently applied** (the re-port dropped E113's touch block; it is off the boot path — see
+  `../om-emu/e113-touch-read-const.md`).
+
+With these, **both E113 paths now pass the device open** and reach the first UI draw (`H-UIIN`).
+
+**Wall 3 (first UI draw, `H-UIIN`) — NEW, two distinct device-specific faults; both deterministic (NOT a timing
+race).** The earlier working note that the remaining `divu`-by-zero was an intermittent real-wall-clock race was
+**wrong**: on the current tree every run of each device fails identically (TFT 20/20, EVF 5/5). The two devices
+stop differently:
+
+- **TFT — a wild jump into the stub exception-vector page.** `trap reason=3 (misaligned load) pc=0x00008010
+  address=0x7dbc0589`, with **no osd-engine activity and no interrupt note** in the machine stderr (so it is not
+  `execInterrupt` vectoring — the CPU's own PC genuinely reached `0x8010`, the zero-filled scratch vector page,
+  and one decoded "instruction" there did `mov (a0),…` with the stale `a0 = 0x7dbc0589`, odd → `Fault(3)`,
+  `src/core/mem.mjs:250`). `0x7dbc0589` is in the TFT/HDMI HAL bank `0x7dbc`, just below the dial descriptor
+  table `0x7dbc0de0` — a plausible bad dial-slot callback, but the jump source is not yet pinned (needs a CPU
+  single-step trace; the lab's `exec_history`/`draw_log` are osd-command logs, not a PC ring).
+- **EVF — OSD commands the engine rejects, then `divu`-by-zero.** During the draw the firmware issues OSD DMA
+  commands whose word `w[0] = 0x00000510` carries **depth field = 5** (`(w[0]>>>8)&0xff`), but `src/dev/engine.mjs`
+  (`cmdFill`/`cmdCopy`) models only **depth == 3** → `fail(E.DEPTH, 5, …)`; also `WORD_BITS` on `w[3]` bit 22
+  (`0x166c7800 & 0x400000`). The firmware then faults `divu` d2,d1 at `0x7d9962c0` (disasm `0x500052a0`) with a
+  zero divisor — the rejected OSD op leaves a count/stride the firmware divides by at 0. The osd errors precede
+  the `divu` in the stderr tail, so the rejected draw is the likely cause, not a separate bug.
+
+**E120 contrast (same E118 board, same engine `enc`).** E120 boots clean through the same path with **zero**
+`DEPTH`/`WORD_BITS` errors — so E113's depth-5 OSD format is a genuine E-M10-specific display-draw divergence,
+not a general engine gap. Whether the fix is engine-level (accept depth 5 under a model gate) or a mis-fed
+command stream (wrong OSD ring base / a corrupted descriptor from an upstream fact) is the open question for
+Wall 3; the TFT wild-jump needs its own single-step trace to the jump site.
+
+**Honest status:** registry init, property-store init, the settings-DB store wall (Wall 1) **and** the
+device-open PER_SIO-serial wall (Wall 2) all pass and are regression-free (test-pure 273/273, purity 255/255;
+E143 tft `state=264`, E120 tft/EVF `state=264`). Both E113 paths now reach the first UI draw (`H-UIIN`) and stop
+at the new, deterministic Wall 3, pinned above to the exact faults (TFT wild-jump to `0x8010`; EVF OSD depth-5
+rejection → `divu`-by-zero at `0x7d9962c0`). `modelcheck E113` / fully-usable menu is **not** reached yet. The
+PER_SIO stand-in and supporting facts are in the fork working tree (uncommitted). No result was fabricated.
 
 ## omcap — `github.com/HolmHaensel/omcap` (GPL-3)
 Wi-Fi and USB tethering for the E-M1 Mark I. Covered in `../usb-protocol/wifi-api.md`.
