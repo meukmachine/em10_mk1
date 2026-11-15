@@ -219,47 +219,65 @@ makes the lab's store-init assertion **model-aware**: E113 carries `db_init_save
 genuinely writes no flash on init, so zero is the correct expectation, not a failure. Boot now passes registry
 init, property-store init **and** settings-DB init.
 
-**Wall 2 (device open / display event-flag handshake) — characterised to the instruction, OPEN.** Past the
-store, both the TFT and EVF boot deadlock at the display device **open** (`display.mjs` `open(device)` →
-`display_cmd(2, …)`, which runs the display task body synchronously). The deadlock is an **event-flag
-handshake**, not the GUI display-sync: E113's display code uses its own event-flag primitive family —
-**`0x50030118` is the wait** (arg `(4,sp)` = timeout; the 28 ms frame wait passes `mov 28,d0`, the handshake
-waits pass `mov -1,d0` = infinite), and **`0x500300c9` / `0x5003004e` are the matching set** (both verified
-by disassembly: `movhu (word),d0; … ; call 0x500300c9`). These are a `0x5003xxxx`-region OlyEv wrapper the
-RTOS stand-in does not know (it hooks the `0x5002bxxx` OlyEvWt). Three cluster flags around
-`display.frame_wait` (`0x7d9b05a0`) are involved, two of them waited infinitely:
+**Wall 2 (device open) — ROOT CAUSE CONFIRMED: the PER_SIO panel-serial channel.** Past the store, both the
+TFT and EVF boot stop at the display device **open** (`display.mjs` `open(device)` → `display_cmd(2, …)`, which
+runs the display task body synchronously). Instrumenting the exact deadlock (`OM_DUMP_IDLE` on the kernel idle
+throw + `OM_LOG_WAITS` on the OlyEvWt wrap, with the lab object captured via `env.onPlaySession` because a
+failed `enter()` nulls `session.lab`) shows **both walls are the same subsystem**: E113's panel driver (LCD and
+EVF) talks to the panel over the **PER_SIO serial bus** (firmware bank `0x7d9e`), driven by a worker task on
+**message queue 73**, with transfer completion signalled on **flag id 138** (id word `0x7d9b056e`). The lab
+models neither queue-73's serial worker nor the PER_SIO transfer-completion interrupt, so the open cannot make
+progress. The common open prologue (identical for TFT and EVF) is:
 
-- **Task 145** (lab home, running the OPEN body) blocks at `mov -1,d0; … movhu (0x7d9b056e),d0;
-  call 0x50030118` at `0x5021d1fe` — an **infinite** completion wait. Chain: display loop `0x5021a036` →
-  `0x5021a3e5` (loop call `0x5021a3e0`→`0x5021d044`) → `0x5021d0b5` → `0x5021d29c` → `0x5021d205`.
-- **Task 131** (display worker — E113's `extra_tasks` entry `0x5021c82c`) blocks at `mov -1,…; movhu
-  (0x7d9b05bc),d0; call 0x50030118` at `0x5021c8e5` — infinite wait on its own input flag, which the same
-  module also *sets* at `0x5021c7be` (`call 0x500300c9`).
-- The frame flag `0x7d9b05a0` is waited with a 28 ms timeout at `0x50224454`; the display task body also
-  waits (`0x50224c76`) and sets (`0x50224cbe`, `call 0x500300c9`) the completion flag `0x7d9b056e`.
+1. `OlyEvWt(flag 36, bits 0x3)` at `0x7d9e24cc` (disasm `0x500514ac`) — grab the PER_SIO bus lock; returns.
+2. `OlyEvWt(flag 177, 0xffffffff)` at `0x7dbad90c` (disasm `0x5021c8ec`) — infinite wait; returns.
+3. `OlyEvWt(flag 138, bits 0x1)` — the serial-transfer **completion** wait. **This is the wall.**
 
-Interpretation: the OPEN body waits forever for flag `0x7d9b056e` to be set by the display task body / worker,
-but that set only runs inside firmware paths (a frame callback and the worker task 131) that the lab does not
-drive — the lab's `S-FRAMEWAIT` pulses only the single 28 ms frame flag `0x7d9b05a0`, not the two
-infinite-wait handshake flags, and nothing bridges set→wait for the `0x50030118` family. E120 (sibling, E118
-family) boots EVF to `state=264` through its open because its open is structured differently (**E120 has no
-frame_wait at all** — `facts.mjs:1041`); E113's 2014 display open is the frame-synced multi-flag handshake
-above, which has no E120 analogue to template. `extra_tasks: [0x5021c82c]` already adds task 131 so it exists;
-the missing piece is driving the `0x50030118` event-flag handshake (teach the RTOS stand-in the
-`0x50030118`/`0x500300c9`/`0x5003004e` family and/or extend `S-FRAMEWAIT` to pulse the handshake flags, then
-verify the worker does meaningful work rather than running on a pulsed-but-empty flag). A per-subsystem
-reverse-engineering effort on E113's display pipeline, not a bounded override.
+Where the two devices diverge:
 
-(Correction: an earlier draft of this section attributed the wall to a missing `display.sync` fact / the
-`S-DISPSYNC` stand-in. That was wrong — `S-DISPSYNC` releases GUI step-end synced *updates* by calling
-image-sync/sync-set functions; it does not drive this open-time `0x50030118` event-flag handshake. The cause
-is the event-flag family above, confirmed by disassembly of both the waits and their sets.)
+- **TFT throws first, at the serial-command enqueue.** Before its flag-138 wait completes, the driver does a
+  **synchronous send to message queue 73**, cmd 0, from `0x7d9e55e3` (disasm `0x500545c3`, PER_SIO). The lab
+  raises “synchronous send to queue 73 … its receiver does not run in the lab”: queue 73 is the serial worker's
+  input queue, and that worker is not modelled. The TFT flag-138 wait site is the TFT/HDMI HAL `0x7dbb5d3f`
+  (disasm `0x50224d1f`, bank `0x7dbb`).
+- **EVF reaches the flag-138 wait and blocks.** The api_tft (`0x7dba`) open body waits `OlyEvWt(flag 138)` at
+  `0x7dbae225` (disasm `0x5021d205`), nested under `0x7dbae2bc`; the kernel idle finds **only the lab task
+  live** (every other task DMT) — a self-block, not a cross-task wait — so nothing can ever set flag 138.
 
-**Honest status:** registry init, property-store init and the settings-DB store wall (Wall 1) now pass and are
+The completion flag 138 is set by the callback at `0x5021d235` (status check `d0==1` → `iOlyEvSt 0x500300c9`
+else `OlyEvSt 0x5003004e`, both on id word `0x7d9b056e`). That callback only runs on a **PER_SIO
+transfer-done** event the lab never produces.
+
+**OlyEvWt *is* hooked — the earlier "the stand-in does not know `0x50030118`" / "the wrap never fires" notes
+were wrong.** `A(0x5002BDD8)` ("OlyEvWt" in `rtos.mjs`) maps through the E143→E113 port **code map** to
+`0x50030118`, so the scoped OlyEvWt wrap in `menu.mjs route_rtos` **does** fire on every one of the open's
+waits (verified: flags 36/177/138 all logged with `dr=1`). It blocks not because the primitive is un-hooked,
+but because **flag 138 matches no stand-in branch**: it is not the vsync flag, not `display.frame_wait`
+(`frameFlag=163`), and not the `PANEL_FLAG` id (`panel=108`). `PANEL_FLAG = A(0x60043188)` cross-build-maps to
+id word `0x7d9b06c4` (id **108**, 58 refs), but E113's open never waits on 108 — it waits on word `0x7d9b056e`
+(id **138**, 13 refs). `S-PANELDONE` answers only `panel`, and it was built for *nested playback* EVF panel
+commands, not the open. (The earlier "the wrap never fires" observation was a **false negative**: the probe read
+`_spike_waits` off a lab object that `enter()` had already nulled on the failed open, so it came back empty.)
+
+**E120/E122 contrast (same E118 family, both pass).** Their open is **VSC-frame-driven**: it reaches a vsync
+wait (E120 flag 137, tagged `vsync`) that the lab's vsync stand-in answers, after which the VSC ISR sets the
+downstream completion flags, and boot proceeds (401+ waits logged, full boot). E113's **2014 PEN/OM-D display
+open is PER_SIO-serial-driven** and blocks on flag 138 **before reaching any vsync wait** — there is no E120
+analogue to template, and `S-FRAMEWAIT` (which pulses the single frame flag) does not touch the serial path.
+
+**Fix direction (targeted stand-in, model-gated — NOT a blanket answer).** Model E113's PER_SIO panel-serial
+channel as instantaneous: in a display run, (a) accept/drop the synchronous **queue-73** serial-command send
+(as `S-SEND` drops already-modelled sends), and (b) answer `OlyEvWt` on the completion flag at id word
+`0x7d9b056e` at once (a stand-in keyed on that specific flag, the way `S-PANELDONE` answers `panel`). This must
+stay specific to the serial-completion flag(s): a **blanket** answer-all-in-display-run breaks boot, because it
+also answers loop-pacing waits that must block (observed: "more than 200000 stub calls"). Open question before
+implementing: whether the queue-73 worker must do real work (e.g. advance a panel state the later menu reads)
+or whether completing instantly suffices — to be checked by whether the post-open menu pixels/count-probe pass.
+
+**Honest status:** registry init, property-store init and the settings-DB store wall (Wall 1) pass and are
 regression-free (test-pure 273/273, purity 255/255; E143 tft `state=264`, E120 tft/EVF `state=264`). Both E113
-paths now reach and stop at the device-open event-flag-handshake wall (Wall 2), which is pinned to the exact
-waits and sets above but is a genuine display-pipeline re-HLE, not a port override. `modelcheck E113` / fully-usable menu is
-therefore **not** reached yet. No result was fabricated to claim otherwise.
+paths reach and stop at the device-open PER_SIO-serial wall (Wall 2), pinned above to the exact queue, flags and
+call sites. `modelcheck E113` / fully-usable menu is **not** reached yet. No result was fabricated.
 
 ## omcap — `github.com/HolmHaensel/omcap` (GPL-3)
 Wi-Fi and USB tethering for the E-M1 Mark I. Covered in `../usb-protocol/wifi-api.md`.
