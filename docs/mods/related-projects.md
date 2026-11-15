@@ -313,16 +313,57 @@ stop differently:
 
 **E120 contrast (same E118 board, same engine `enc`).** E120 boots clean through the same path with **zero**
 `DEPTH`/`WORD_BITS` errors — so E113's depth-5 OSD format is a genuine E-M10-specific display-draw divergence,
-not a general engine gap. Whether the fix is engine-level (accept depth 5 under a model gate) or a mis-fed
-command stream (wrong OSD ring base / a corrupted descriptor from an upstream fact) is the open question for
-Wall 3; the TFT wild-jump needs its own single-step trace to the jump site.
+not a general engine gap.
+
+**Open question resolved — it is a real format, not a mis-fed stream.** Dumping the engine error ring at the
+EVF fault (`osderr.mjs` via `EngineDebug.errors()`, which carries the full command words) and decoding the
+rejected commands under the *existing* ENC2 field layout shows they are structured, consistent, geometrically
+sane `cmdFill` (opcode `0x10`) ops — not garbage from a wrong base pointer:
+
+| # | `w[0]` | depth | dst | stride | width | height | `w[3]` bit22 |
+|---|--------|-------|-----|--------|-------|--------|--------------|
+| 1 | `0x510` | 5 | `0x804ee2dc` | 8192 | 2048 | 57 | 0 |
+| 2 | `0x510` | 5 | `0x805602dc` | 5632 | 1424 |  1 | **1** |
+| 3 | `0x510` | 5 | `0x809f1640` | 8192 | 2048 | 80 | 0 |
+| 4 | `0x510` | 5 | `0x80a91640` | 5504 | 1392 |  1 | **1** |
+| 5 | `0x510` | 5 | `0x80aa42c0` | 2176 |  544 |  1 | 0 |
+
+Every command is a **black fill** (`w[1] = 0`). The three bit22-clear fills (1, 3, 5) decode to `width × 4 ==
+stride` **exactly** (2048×4=8192, 544×4=2176) → **depth 5 = 4 bytes/pixel** (vs the reference depth-3 the model
+hard-codes). They fail *only* the `depth == 3` gate. Commands 2 and 4 pair with 1 and 3 — `dst2 = dst1 + 57
+rows` (57 × 8192 = 0x72000), i.e. a main block plus a single-row remainder, and the remainder fills set `w[3]`
+bit 22 (a reserved bit in the reference model; its exact field meaning on E113 is not yet pinned). The
+consistency (same `w[0]`, black fill, dst adjacency, exact `w×4=stride`) rules out a corrupted descriptor.
+
+So the EVF fix is **engine-level**: accept `depth == 5` (4 bpp) under an E113 model gate and resolve the
+`w[3]` bit-22 remainder encoding, rather than chasing an upstream fact. (A black fill onto lazily-zeroed DRAM is
+nearly a no-op, so the cascade is from the *rejection* — the firmware then `divu`-by-zeros a count that stays 0
+because the fills errored, at `0x7d9962c0`.) The TFT wild-jump remains a separate CPU control-flow bug that
+needs its own single-step trace to the jump site.
+
+**Depth-5 gate implemented — advances EVF one layer to a surface-geometry wall.** `src/dev/engine.mjs` now reads
+the fill/copy depth and the `w[3]`/`w[2]` bit-22 gate from `BOARD.engine` (`DEPTH_OK = BE.depth ?? 3`,
+`WORD22_OK = BE.word22 === true`), and E113's `board` hand-gives `engine: { depth: 5, word22: true }`
+(`src/fw/models.mjs`). Every other model keeps the strict depth-3, bit-22-reserved check unchanged
+(test-pure **273/273**, purity **255/255**; E120 tft/EVF still `state=264`). With the gate, E113 EVF no longer
+raises `DEPTH`/`WORD_BITS` — the fills are admitted, and the `divu` divisor advances from `0` to `0x2000`
+(= stride 8192), i.e. the firmware gets further. The draw then stops at the **next** layer: the fills raise
+`GUARD` because **no surface guards are registered at all** on E113's EVF device path (a guard-slot dump at the
+fault shows zero active slots), and their targets (bus `0x04ee2dc`, `0x05602dc`, `0x09f1640`, … at strides 8192
+/ 5632 / 5504 / 2176) sit in no backed bus range either. So E113's EVF framebuffer **surface geometry is not
+modelled** — the lab's native init never set up E113's panel surfaces/guards (E113 carries no `gui`/surface fact;
+the port takes E143's canvas, whose stride 1664 matches none of E113's). That is the next, distinct RE task: find
+where E113's EVF surfaces live (bus region + stride) and register them. The depth-5 format question is **closed**;
+the surface-geometry question is **open**. The TFT wild-jump is still its own separate CPU-control-flow bug.
 
 **Honest status:** registry init, property-store init, the settings-DB store wall (Wall 1) **and** the
 device-open PER_SIO-serial wall (Wall 2) all pass and are regression-free (test-pure 273/273, purity 255/255;
-E143 tft `state=264`, E120 tft/EVF `state=264`). Both E113 paths now reach the first UI draw (`H-UIIN`) and stop
-at the new, deterministic Wall 3, pinned above to the exact faults (TFT wild-jump to `0x8010`; EVF OSD depth-5
-rejection → `divu`-by-zero at `0x7d9962c0`). `modelcheck E113` / fully-usable menu is **not** reached yet. The
-PER_SIO stand-in and supporting facts are in the fork working tree (uncommitted). No result was fabricated.
+E143 tft `state=264`, E120 tft/EVF `state=264`). Both E113 paths now reach the first UI draw (`H-UIIN`). The EVF
+OSD **depth-5 format** is now modelled (engine gate above) and no longer the stop; EVF now stops one layer
+deeper, at the unmodelled EVF **surface geometry** (`GUARD`, no surfaces registered), still surfacing as the same
+`divu`-by-zero at `0x7d9962c0`. TFT still stops at its separate wild-jump to `0x8010`. `modelcheck E113` /
+fully-usable menu is **not** reached yet. The PER_SIO stand-in (fork commit `74b5c12`) and the depth-5 engine
+gate are committed to the fork; the latter is regression-free. No result was fabricated.
 
 ## omcap — `github.com/HolmHaensel/omcap` (GPL-3)
 Wi-Fi and USB tethering for the E-M1 Mark I. Covered in `../usb-protocol/wifi-api.md`.
