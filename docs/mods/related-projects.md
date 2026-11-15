@@ -430,6 +430,29 @@ Deciding between these needs the firmware's OSD setup/emitter disassembled (how 
 out of scope for a single session. The depth-5 **format gate** remains in and regression-free; the guard reconcile
 is the open, now-well-posed task.
 
+**E120 cross-check — the dst decode is NOT generically broken (2026-11-15).** Booting a clean reference body (E120,
+`DEV=evf`) through the same `osdprobe.mjs` and decoding its fills with the **same** `cmdFill` formula settles whether
+the `hiDst`/`w[2]>>>3` address math is the fault. It is not. E120 reaches `state=264` and issues fills whose dst
+lands **exactly** on its own `gui.banks` guards:
+
+| body | fill `w0` | fill `w[2]` | decoded dst | matching guard base | stride |
+|---|---|---|---|---|---|
+| E120 | `0x20000310` | `0xfe764000` | `0xbfcec800` | `0xbfcec800` ✓ | 896 |
+| E120 | `0x20000310` | `0xff7cc000` | `0xbfef9800` | `0xbfef9800` ✓ | 896 |
+| E113 | `0x00000510` | `0x027716e0` | `0x804ee2dc` | (guards at `0xBD86AA00`…) ✗ | 8192 |
+
+The decisive difference is in the **command words themselves**, not the decoder. E120 carries the high-address bits
+in `w[2]>>>3` (`0xfe764000>>>3 = 0x1fcec800`, bit-28 set) **and** `hiDst = w0 & 0x60000000 = 0x20000000`, so
+`bus(0x20000000 | 0x1fcec800) = 0xbfcec800` — on a guard. E113's `w[2]>>>3 = 0x4ee2dc` is small (no high bits) and
+its `hiDst` is `0`, so the fill strands at `0x804ee2dc`. So with identical engine code, E120's firmware emits words
+that point at its registered guards and E113's do not. That **rules out hypothesis 2 as a decoder bug** (the formula
+is correct — E120 proves it) and **sharpens the problem to the E113 data**: either E113's `gui.banks` guard bases
+are mis-derived (the lab registers `0xBD…`/stride-896 while the firmware draws `0x80…`/stride-8192), or E113 draws
+to genuinely separate depth-5 planes the lab never guards. Both still point at the same next step — disassemble
+E113's OSD surface-allocator/emitter to recover the plane base+stride it actually programs — but the question is now
+"why do E113's emitted words carry no high-address bits (and stride 8192), when E120's do" rather than "is the
+decoder wrong." The gate and all green tests are unchanged; nothing in the model was altered by this cross-check.
+
 **Refinement — the address region, not the stride, is the primary blocker (2026-11-15).** Testing hypothesis 1 on
 paper kills it as a standalone fix: the fills decode to `0x80xxxxxx` and **every** guard sits at `0xBDxxxxxx`, so
 `addr < base` for all of them — even a relaxed **base+size range** guard would reject these fills, because they are
