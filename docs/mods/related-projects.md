@@ -153,6 +153,34 @@ The fixed `facts.mjs`/`expand.mjs`/`machine.mjs` (vendored, gitignored copies), 
 generator, the calibration diagnostic (`mapdiag.mjs`) and a pre-port backup of `ports.mjs` are kept in
 gitignored `research/om-emu-src/`.
 
+**E113 runs at the CPU level (2026-11-15).** Beyond the green fact-port, real E113 firmware code now
+*executes* on OM-Emu's emulated MN10300 through the debug tool (`emu/bin/debug.mjs`), with disassembly,
+register/stack/memory inspection, breakpoints and tracing. Three things were needed, all honest:
+- **`prop` fact supplied by measurement.** The full lab loads `src/lab/display.mjs`, whose top-level
+  `DEVICE` table calls `fact('prop.evf_code')`; the cross-build map leaves E143's `PROP_DEVICE_SITES`
+  unplaced, so E113's `propDevice`/`evfCode` rules emit no `prop`. Measured from E113's **own** image: its
+  single EVF-writer (`mov (abs32),d0; cmp 6,d0; bne; mov 4014,d0; mov 8,d1`) names output-device property
+  `4014` and EVF device code `6` — identical to E120 (same E118 board family). Supplied by hand as
+  `MODELS.E113.prop = { device: 4014, evf_code: 6 }` with that evidence, not guessed.
+- **DRAM sized to hold the high-linked image.** E113 links its code at `0x7d991020`, which is in reserved
+  DRAM **above** the managed-heap top the `dramSize` fact reports (`0x1d971200` ≈ 474.9 MiB vs the image
+  base at offset `0x1d991020`). `createMachine` now sizes the run-time DRAM window to cover both the heap
+  fact and the linked image (`Math.max(dram_size, image_base−0x60000000 + rom.length)`, capped at the
+  512 MiB chip). This is a no-op for every body whose image ends within its managed DRAM (E143, E120, …) —
+  **test-pure stays 272/272 + 255/255, zero regression** — and completes the same E113 memory-model fix
+  that already relocates below-base preload rows into DRAM directly.
+- **Run stock E113, not the hardcoded E143 patch set.** `debug.mjs` defaults to the OM1 (E143) patched
+  artifact; pass `--image <E113 stock block>` so it runs E113's own bytes, selected by `OM_EMU_MODEL=E113`.
+
+Convenience wrapper: `research/om-emu-src/e113-play.sh` (gitignored) sets the env + paths. E113's reset
+entry disassembles and runs cleanly — `and 61695,psw` (mask IRQs), two init `calls`, then a peripheral
+poke `mov d3,(8,a2)` to `0x98100008` that **faults as expected**: that MMIO window has no device model
+(the lab stubs sensor/card/NAND/unmodelled registers). The CPU core, decode, and memory model are sound;
+the limit is unmodelled hardware, not the engine. The **full HLE lab** (`play.mjs`, menus/GUI) still needs
+E113's remaining per-model fact subsystems (`ae`, `api`, `crt`, `media`, `rec_file`, `storage`, `touch_*`,
+…), each either measured from E113's bytes (as `prop`/`evf_code` were) or carried from its E120 sibling —
+substantial further RE. CPU-level execution and inspection work **today**.
+
 ## omcap — `github.com/HolmHaensel/omcap` (GPL-3)
 Wi-Fi and USB tethering for the E-M1 Mark I. Covered in `../usb-protocol/wifi-api.md`.
 
