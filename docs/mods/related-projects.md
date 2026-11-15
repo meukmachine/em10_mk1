@@ -204,29 +204,52 @@ observable behaviour. The pass drove that boot blocker-by-blocker; each fix was 
 
 With these the lab reaches the **settings-DB init** — i.e. past registry + property-store init.
 
-**Wall 1 (EVF path) — the settings-store subsystem is different code, not relocated.** The lab asserts the
-blank-camera DB-init triggers exactly one flash-save; on E113 it triggers zero (`menu.mjs:747`). Diagnosis,
-three independent facts: (a) the map places E143's DB-init `0x503c5473`→E113 `0x50173d5c` and flash-save
+**Wall 1 (settings store) — CLEARED (fork commit `cb16d52`).** The lab asserted the blank-camera DB-init
+triggers exactly one flash-save; on E113 it triggers zero (`menu.mjs:747`). Diagnosis, three independent
+facts: (a) the map places E143's DB-init `0x503c5473`→E113 `0x50173d5c` and flash-save
 `0x503eee94`→`0x50203a74`, but a coverage trace shows E143's DB-init executes **5302** instructions /576
 code ranges while E113's mapped target executes **538** /100 — an order of magnitude less, so the target is
 not the real DB-init; (b) disassembling `0x50203a74` shows a 16-byte-sp-buffer helper (two `call`s to
 `0x50042bd7`/`0x50213104`, then `strcpy`-style loops), categorically not a flash-save — no flash-driver
 cluster, none of E143's `0xF001E` flash constant (**0 occurrences** anywhere in E113); (c) E143's distinctive
 store string `damage_info uninitialized` is **absent** from E113. The E-M10's 2014 store module was rewritten
-by the 2022 OM-1; it has no address-mapped analog. `dbSave` was already deferred in the fact layer for the
-same reason — this pass confirms the divergence runs through the whole subsystem, and the lab's
-`_s_flash_save` caller/print asserts are E143-shaped on top. Closing it means re-HLE-ing E113's own store
-path (find its real DB-init + flash-save by hardware/behaviour, then model-specific assert logic), not an
-override.
+by the 2022 OM-1; it has no address-mapped analog. The fix keeps the fact layer's deferral of `dbSave` and
+makes the lab's store-init assertion **model-aware**: E113 carries `db_init_saves: 0` in `models.mjs`, and
+`menu.mjs` checks `this.store_log.flash_save.length === (MODEL_INFO.db_init_saves ?? 1)` — the blank E113 DB
+genuinely writes no flash on init, so zero is the correct expectation, not a failure. Boot now passes registry
+init, property-store init **and** settings-DB init.
 
-**Wall 2 (TFT path) — display-queue divergence.** `menu.mjs:1055` via `play.mjs:823`: a synchronous send to
-queue 73 (from disasm `0x500545c3`) whose receiver doesn't run in the lab — the same class of structural
-2014-vs-2022 divergence in the display pipeline.
+**Wall 2 (device open / display pipeline) — characterised to the instruction, OPEN.** Past the store, both the
+TFT and EVF boot deadlock at the display device **open** (`display.mjs` `open(device)` → `display_cmd(2, …)`,
+which runs the display task body synchronously). Two firmware tasks deadlock, both parked in the same
+timeout-wait wrapper **`0x50030118`** (a mid-level `0x5003xxxx` RTOS wait — arg d3 = timeout at `(40,sp)`,
+calls deeper `0x50032f88`/`0x50032df0`; not OlyEvWt, not a bounded hook point) on event-flag words in the
+display cluster around `display.frame_wait` (`0x7d9b05a0`):
 
-**Honest status:** the tractable parts of E113's full-menu bring-up are done and regression-free (registry +
-property-store init now pass); the two remaining walls are each a per-subsystem reverse-engineering effort
-(E113's own store and display-queue code), not bounded port overrides. `modelcheck E113` / full menu is
-therefore **not** reached this pass. No result was fabricated to claim otherwise.
+- **Task 145** (lab home, running the OPEN body) blocks at `movhu (0x7d9b056e),d0; call 0x50030118` at
+  `0x5021d1fe`. Chain: display loop `0x5021a036` → `0x5021a3e5` (loop call `0x5021a3e0`→`0x5021d044`) →
+  `0x5021d0b5` → `0x5021d29c` → `0x5021d205`.
+- **Task 131** (the display worker — E113's `extra_tasks` entry `0x5021c82c`) blocks at
+  `movhu (0x7d9b05bc),d0; call 0x50030118` at `0x5021c8e5`.
+
+Interpretation: the OPEN body waits for flag `0x7d9b056e` (which the display worker task 131 sets on
+completion), but task 131 is itself parked waiting on its own input flag `0x7d9b05bc` — a request the lab never
+routes to it. This is the display-sync handshake. E120 (sibling, 2014-adjacent) boots EVF to `state=264`
+through this same open because its FACTS carry `display.sync` (and the `S-DISPSYNC` stand-in routes the
+handshake); E113's `display.sync` is **undefined** — the fact finder (`facts.mjs:639+`) recognises only the
+E118-family and E143-family forms of the sync module, and the E-M10's 2014 module is a third form it does not
+match, so no `display.sync` fact is placed and the lab cannot drive task 131. Closing it means HLE-ing E113's
+own display-sync module (locate its request / image-sync / sync-set from E113's bytes with E120 as template,
+either as a `models.mjs` override or by extending the `DISPLAY_SYNC` finder for the third form, then verify
+`S-DISPSYNC` releases the `0x50030118` waits) — a per-subsystem reverse-engineering effort, not a bounded
+override. Added as `extra_tasks: [0x5021c82c]` so task 131 at least exists; the missing piece is the sync fact
+that connects the two waits.
+
+**Honest status:** registry init, property-store init and the settings-DB store wall (Wall 1) now pass and are
+regression-free (test-pure 273/273, purity 255/255; E143 tft `state=264`, E120 tft/EVF `state=264`). Both E113
+paths now reach and stop at the device-open display-sync wall (Wall 2), which is pinned to the exact two waits
+above but is a genuine display-pipeline re-HLE, not a port override. `modelcheck E113` / fully-usable menu is
+therefore **not** reached yet. No result was fabricated to claim otherwise.
 
 ## omcap — `github.com/HolmHaensel/omcap` (GPL-3)
 Wi-Fi and USB tethering for the E-M1 Mark I. Covered in `../usb-protocol/wifi-api.md`.
