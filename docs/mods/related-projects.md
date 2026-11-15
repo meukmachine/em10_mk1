@@ -478,6 +478,37 @@ E113's OSD surface-allocator/emitter to recover the plane base+stride it actuall
 "why do E113's emitted words carry no high-address bits (and stride 8192), when E120's do" rather than "is the
 decoder wrong." The gate and all green tests are unchanged; nothing in the model was altered by this cross-check.
 
+(Correction to an earlier working note: E113's `gui` fact is **stride 896, banks `0xBD8BC000`…** — the same shape
+as its runtime guards, *not* a `0xB7…`/stride-1664 set. An earlier scratch grep misattributed another model's
+`ports.mjs` line to E113; `FACTS.E113.gui` printed directly is `{stride:896, height:600, banks:[[0xBD8BC000,…]]}`.
+So the guards are consistent with E113's own gui fact; there is no third address family.)
+
+**The skipped init is E113's `display.sync` — a third, unported display-sync form (2026-11-15).** Comparing the
+`display` facts of E113 and a body that boots past this wall (E120) isolates exactly one structural gap:
+`FACTS.E113.display.sync` is **`null`** (and `timer_sleep` is absent), while `FACTS.E120.display.sync` is a full
+record-form descriptor `{request, image_sync, sync_set, kind:0, panels:[0,1], record:{…}}`. The lab drives its
+display bring-up (`src/lab/camapp.mjs` S-DISPSYNC) from this fact; with it null, E113's display sync/geometry path
+is never run — the leading candidate for the stage that should fill `0x6055f944` and compute the real guard
+base/stride. The porter returns null because E113 uses a **third** display-sync API form the detector
+(`facts.mjs` `displaySync`, `DISPLAY_API_NAMES`) does not recognise:
+
+- E143 / E118 family — id `0x10035`/`0x10037`, or names `api_disp_Disp_Update_Osd` / `api_disp_dummy_Disp_Update_Force_Disp_Sync`.
+- E120 record form — names `api_disp_Disp_Sync_Update_Osd_Multi_Ext` / `api_disp_Disp_Sync_Force_Update_Multi_Ext`.
+- **E113** — names **`api_disp_Disp_Sync_Update_Osd`** (request) / **`api_disp_Disp_Sync_Force_Update`** (image sync),
+  neither `_Multi_Ext` nor an id load. `displaySync(E113)` bails at the `out.request === undefined` guard and yields
+  `undefined` → `sync: null`.
+
+A non-destructive experiment (append E113's two names to `DISPLAY_API_NAMES`, reverted) confirmed this is a genuine
+**new form**, not a missing-name typo: with the names present E120/E143 still derive unchanged (no regression), but
+E113 then throws `displaySync: 2 request entries … 0x501fdcb1, 0x501fdc99, want 1` — E113's request API has two
+entries 24 bytes apart that need form-specific disambiguation (as each existing form required its own analysis; see
+the dated notes above `displaySync`). So the open task is now concrete and well-posed: **add E113's display-sync
+form to the porter** (disambiguate the two request entries, find the matching image-sync caller and `sync_set`
+clear pattern, set `kind`/`panels`), regenerate `FACTS.E113.display.sync`, and verify the lab's S-DISPSYNC path
+then populates `0x6055f944` and the OSD guard geometry so the EVF boots past H-UIIN. The link from `display.sync`
+to the `0x6055f944` write is still **unproven** — the next session should confirm it before committing a porter
+change — but it is the one structural display gap that distinguishes E113 from a body that clears this wall.
+
 **Refinement — the address region, not the stride, is the primary blocker (2026-11-15).** Testing hypothesis 1 on
 paper kills it as a standalone fix: the fills decode to `0x80xxxxxx` and **every** guard sits at `0xBDxxxxxx`, so
 `addr < base` for all of them — even a relaxed **base+size range** guard would reject these fills, because they are
