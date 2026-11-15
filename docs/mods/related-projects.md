@@ -369,6 +369,41 @@ the depth-5 word's address-field layout, so the fills land on the guards. The de
 regression-free; the **surface-geometry reconciliation** is the open task. The TFT wild-jump is still its own
 separate CPU-control-flow bug.
 
+**Deeper probe (2026-11-15) — the guards are the firmware's own, so the fix is in the command-word decode, not the
+lab's record model.** Instrumenting the EVF boot directly (temporary `console.error` in `OsdLab.native_init` and
+`EngineDebug.guarded`, both reverted; fork tree verified clean) established two things the earlier post-hoc dumps
+could not:
+
+1. **`OsdLab.native_init` never runs on the E113 EVF path.** Its entry marker never fires, yet at the first `GUARD`
+   fail the live debug-window guard table already holds **7 active guards** (`g0 base=0xBD86AA00 stride=896 h=1200`
+   … `g6 base=0xBD557200 stride=896 h=600`). So the guards are **registered by the real firmware's own OSD init**
+   running inside the HLE lab during `open_session` bring-up — not by the lab's `native_init` stub, and not by the
+   lab's record model at all. Reading the lab's OSDDRAW records "as 4 bpp" therefore cannot move these guards; they
+   are what the firmware itself wrote.
+2. **The 4 rejected fills are also firmware-issued and decode cleanly** (geometry via the engine's own `sizeM1`/
+   stride formulas), all `w[0]=0x510`, depth 5, dst in the **`0x80xxxxxx`** bus region:
+
+   | dst (bus) | width | height | stride | `w*4` |
+   |---|---|---|---|---|
+   | `0x804ee2dc` | 2048 | 57/80 | 8192 | 8192 ✓ |
+   | `0x80a91640` | 1392 | 1 | 5504 | 5568 |
+   | `0x80aa42c0` | 544 | 1 | 2176 | 2176 ✓ |
+   | `0x805602dc` | 1424 | 1 | 5632 | 5696 |
+
+   (The big 2048×8192 fill varies in height run-to-run — it is an animated/partial clear.) Two fills are exact 4 bpp
+   (`w*4 == stride`); the two single-row fills are not, consistent with span/line writes rather than full surfaces.
+
+**What this re-frames.** The firmware registers guards at **stride 896** (field `7 << 7`) and then draws at **stride
+8192/2176** (fields `64<<7` / `17<<7`) into **`0x80xxxxxx`** while the guards sit at **`0xBDxxxxxx`**. On real
+hardware that same firmware draws successfully, so the emulator's **depth-5 command-word field decode must differ
+from the depth-3 layout it currently reuses** — specifically the **stride field bit position** and the **dst
+high-bits** (`hiDst = w0 & 0x60000000` yields 0 here, stranding the fills at `0x80…` instead of `0xBD…`). The open
+task is therefore **not** "re-read the lab's records" but **RE of E113's depth-5 OSD command word**: find the real
+stride and dst-high field positions (and bit22's role) so a depth-5 fill at stride 896 / base `0xBDxxxxxx` is what
+`guarded()` sees. That needs the firmware's OSD command *emitter* (whatever enqueues the `0x510` words into
+`DRV_CMDBUF`) disassembled — genuinely multi-session, but now pinned to one decode question rather than an
+open-ended geometry hunt.
+
 **Honest status:** registry init, property-store init, the settings-DB store wall (Wall 1) **and** the
 device-open PER_SIO-serial wall (Wall 2) all pass and are regression-free (test-pure 273/273, purity 255/255;
 E143 tft `state=264`, E120 tft/EVF `state=264`). Both E113 paths now reach the first UI draw (`H-UIIN`). The EVF
