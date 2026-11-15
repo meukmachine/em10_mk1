@@ -441,6 +441,31 @@ lands **exactly** on its own `gui.banks` guards:
 | E120 | `0x20000310` | `0xff7cc000` | `0xbfef9800` | `0xbfef9800` ✓ | 896 |
 | E113 | `0x00000510` | `0x027716e0` | `0x804ee2dc` | (guards at `0xBD86AA00`…) ✗ | 8192 |
 
+**The `divu`-by-zero has an exact root: an uninitialised display-geometry global (2026-11-15).** Disassembling the
+H-UIIN stop (`0x500052a0`, runtime `0x7d9962c0`, `fault=6`) shows the faulting instruction is `divu d2,d1` where
+`d2` was just loaded from the 16-bit global **`0x6055f944`** (`movhu (0x6055f944),d1` at `0x50005298` → `d2`). The
+helper (entry `0x50005283`, called from the H-UIIN routine at `0x50004061`/`0x5000406d`) computes
+`(size << 9) / mem[0x6055f944]` **twice** and stores the two quotients into a geometry struct — a fixed-point ratio
+(`×512 ÷ denominator`). The denominator is **0**, so `fault=6`. Crucially, **nothing in the whole blk00 image
+writes `0x6055f944` with an absolute store, and no instruction loads its (or a near `0x6055f9xx` struct-base)
+address as an immediate** — it is populated only by an *indirect* struct init that the lab's E113 boot shortcut
+never runs. So this is the **same root as the GUARD mismatch**: the HLE lab skips E113's firmware display-geometry
+initialisation, leaving the OSD surface globals (the guard base/stride **and** this `0x6055f944` divisor) at
+zero/reference instead of their real computed values. Two symptoms, one cause — the lab brings the EVF up without
+executing the firmware stage that fills the OSD geometry globals. The fix is therefore to run (or faithfully
+emulate) that init stage for E113, not to patch either symptom in isolation.
+
+**E120 cross-check — the dst decode is NOT generically broken (2026-11-15).** Booting a clean reference body (E120,
+`DEV=evf`) through the same `osdprobe.mjs` and decoding its fills with the **same** `cmdFill` formula settles whether
+the `hiDst`/`w[2]>>>3` address math is the fault. It is not. E120 reaches `state=264` and issues fills whose dst
+lands **exactly** on its own `gui.banks` guards:
+
+| body | fill `w0` | fill `w[2]` | decoded dst | matching guard base | stride |
+|---|---|---|---|---|---|
+| E120 | `0x20000310` | `0xfe764000` | `0xbfcec800` | `0xbfcec800` ✓ | 896 |
+| E120 | `0x20000310` | `0xff7cc000` | `0xbfef9800` | `0xbfef9800` ✓ | 896 |
+| E113 | `0x00000510` | `0x027716e0` | `0x804ee2dc` | (guards at `0xBD86AA00`…) ✗ | 8192 |
+
 The decisive difference is in the **command words themselves**, not the decoder. E120 carries the high-address bits
 in `w[2]>>>3` (`0xfe764000>>>3 = 0x1fcec800`, bit-28 set) **and** `hiDst = w0 & 0x60000000 = 0x20000000`, so
 `bus(0x20000000 | 0x1fcec800) = 0xbfcec800` — on a guard. E113's `w[2]>>>3 = 0x4ee2dc` is small (no high bits) and
