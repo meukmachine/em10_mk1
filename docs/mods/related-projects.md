@@ -426,6 +426,27 @@ Deciding between these needs the firmware's OSD setup/emitter disassembled (how 
 out of scope for a single session. The depth-5 **format gate** remains in and regression-free; the guard reconcile
 is the open, now-well-posed task.
 
+**Refinement — the address region, not the stride, is the primary blocker (2026-11-15).** Testing hypothesis 1 on
+paper kills it as a standalone fix: the fills decode to `0x80xxxxxx` and **every** guard sits at `0xBDxxxxxx`, so
+`addr < base` for all of them — even a relaxed **base+size range** guard would reject these fills, because they are
+in a different region entirely. So hypothesis 2 (address decode) dominates: the depth-5 fill's destination resolves
+to the wrong region. The most likely mechanism is a **missing engine plane-base register**: `cmdFill` treats
+`w[2]>>3` as an absolute low address, but on E113 it is probably an **offset** added to a plane base the firmware
+programs into an engine MMIO register during OSD setup (the same setup that registers the `0xBD…` guards). The
+current engine model has no such base-add, so the offset `0xaa42c0` is stranded at `0x80aa42c0` instead of landing
+in the `0xBD…` plane. **Probe result (negative, recorded per document-everything):** instrumenting the engine's
+MMIO `write()` across the whole E113 EVF boot caught **no** store of a `0xBD…`/`0xBC…`/`0x3D…` value to any engine
+register. So the plane base is **not** programmed into an engine register as a raw plane address — the "missing
+base-register add" mechanism, as stated, is **wrong**. In raw (pre-`bus`) terms the mismatch sharpens: the guards
+sit at raw `0x3D86AA00`… (≈1 GB, absolute DRAM), while the fills' `w[2]>>3` offsets are raw `0xaa42c0`… (≈11 MB) —
+magnitudes apart, and adding a fill offset to a guard base overflows that guard's `stride*height` ≈ 1 MB extent. So
+the fill destination is computed from a base this model never sees, and it is **not** a static engine register.
+**Next session, re-aimed:** find where the firmware's OSD setup computes the draw base — likely a value handed in by
+a lab stand-in (the record/plane-geometry or PER_SIO setup) that currently returns geometry the firmware turns into
+`0xBD…` guards but a different base for the draws. Trace the firmware's address computation for the `0x510` fills
+back to its inputs rather than looking for a single register. Until that source is found, no base is assumed —
+guessing it would fabricate a result.
+
 **Honest status:** registry init, property-store init, the settings-DB store wall (Wall 1) **and** the
 device-open PER_SIO-serial wall (Wall 2) all pass and are regression-free (test-pure 273/273, purity 255/255;
 E143 tft `state=264`, E120 tft/EVF `state=264`). Both E113 paths now reach the first UI draw (`H-UIIN`). The EVF
