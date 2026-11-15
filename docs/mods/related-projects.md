@@ -347,27 +347,34 @@ the fill/copy depth and the `w[3]`/`w[2]` bit-22 gate from `BOARD.engine` (`DEPT
 (`src/fw/models.mjs`). Every other model keeps the strict depth-3, bit-22-reserved check unchanged
 (test-pure **273/273**, purity **255/255**; E120 tft/EVF still `state=264`). With the gate, E113 EVF no longer
 raises `DEPTH`/`WORD_BITS` — the fills are admitted, and the `divu` divisor advances from `0` to `0x2000`
-(= stride 8192), i.e. the firmware gets further. The draw then stops at the **next** layer: the fills raise
-`GUARD` because **no surface guards are registered at all** on E113's EVF device path (a guard-slot dump at the
-fault shows zero active slots), and their targets (bus `0x04ee2dc`, `0x05602dc`, `0x09f1640`, … at strides 8192
-/ 5632 / 5504 / 2176) sit in no backed bus range either. So E113's EVF framebuffer **surface geometry is not
-modelled** — the lab's native init never set up E113's panel surfaces/guards (E113 carries no `gui`/surface fact;
-the port takes E143's canvas, whose stride 1664 matches none of E113's). The contrast with E120 (clean EVF) is
-sharp and points past a mere missing registration to a different OSD pipeline: a guard-slot dump on E120 at a
-clean frame shows **7** lab-registered guards at bus `0xBFxxxxxx`, **stride 896, 1 byte/pixel** indexed surfaces
-(896-px wide); E113's fills instead target **stride 8192, 2048-px wide, 4 bytes/pixel** (depth 5) at bus offsets
-`0x04ee2dc`+ whose decoded high bits are zero (vs E120's `0xBF…`). So E113 uses a wider, deeper OSD surface set
-at a different bus region, and possibly a different dst-high-bit encoding in the depth-5 command word (the current
-ENC2 `hiDst = w0 & 0x60000000` yields `0x80…`, not `0xBF…`/`0xA0…`). That is the next, distinct RE task: pin
-E113's EVF surface bases/strides (and confirm the depth-5 word's address-field layout), then register them. The
-depth-5 **format** question is **closed**; the **surface-geometry** question is **open**. The TFT wild-jump is
-still its own separate CPU-control-flow bug.
+(= stride 8192), i.e. the firmware gets further. The draw then stops at the **next** layer: the fills raise `GUARD`.
+
+**Correction (an earlier note here said "no guards are registered" — that was wrong).** That claim came from a
+post-fault guard dump that silently read nothing, because on E113 the fault is thrown *inside* `open_session`
+before `session.lab` is assigned, so every post-hoc `pl.session.lab` inspection saw `null` and printed nothing —
+which was misread as "zero guards". Instrumenting `guarded()` directly (dump on the first `false`, revert after)
+shows the truth: E113's native init **does** register **7 guards**, same structure as E120 — bases `0xBDxxxxxx`,
+**stride 896**, heights 1200/600 (kinds 0,0,1,1,2,2,3), read from the firmware's OSDDRAW registry. (E120's are
+the same 7 at `0xBFxxxxxx`.)
+
+So the EVF wall is **not** absent surfaces but a **stride/format mismatch**: `guarded()` requires an exact
+`stride === gstride` match, and E113's depth-5 fills use stride **2176 / 5632 / 5504 / 8192** (4 bytes/pixel,
+widths 544 / … / 2048) against guards registered at stride **896** (1 byte/pixel). The fill target also decodes
+to a low address (`0x80aa42c0`, high bits zero under ENC2 `hiDst = w0 & 0x60000000`) nowhere near the guards'
+`0xBDxxxxxx`. Both point back to the same root: E113's **depth-5 (4 bpp) OSD surface geometry** — the lab builds
+its surfaces/guards from the OSDDRAW records as 1-byte-per-pixel (stride 896), but E113 draws them at 4 bpp with
+different widths and (apparently) a different dst-high-bit encoding in the depth-5 command word. The next RE task
+is to reconcile this: read E113's OSDDRAW records as its true 4 bpp geometry (correct stride/width) and confirm
+the depth-5 word's address-field layout, so the fills land on the guards. The depth-5 **format gate** is in and
+regression-free; the **surface-geometry reconciliation** is the open task. The TFT wild-jump is still its own
+separate CPU-control-flow bug.
 
 **Honest status:** registry init, property-store init, the settings-DB store wall (Wall 1) **and** the
 device-open PER_SIO-serial wall (Wall 2) all pass and are regression-free (test-pure 273/273, purity 255/255;
 E143 tft `state=264`, E120 tft/EVF `state=264`). Both E113 paths now reach the first UI draw (`H-UIIN`). The EVF
 OSD **depth-5 format** is now modelled (engine gate above) and no longer the stop; EVF now stops one layer
-deeper, at the unmodelled EVF **surface geometry** (`GUARD`, no surfaces registered), still surfacing as the same
+deeper, at a `GUARD` **stride/format mismatch** (7 guards *are* registered at stride 896 / 1 bpp, but E113's
+depth-5 fills use 4 bpp strides 2176/8192 — see the correction above), still surfacing as the same
 `divu`-by-zero at `0x7d9962c0`. TFT still stops at its separate wild-jump to `0x8010`. `modelcheck E113` /
 fully-usable menu is **not** reached yet. The PER_SIO stand-in (fork commit `74b5c12`) and the depth-5 engine
 gate are committed to the fork; the latter is regression-free. No result was fabricated.
