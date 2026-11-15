@@ -181,6 +181,53 @@ E113's remaining per-model fact subsystems (`ae`, `api`, `crt`, `media`, `rec_fi
 …), each either measured from E113's bytes (as `prop`/`evf_code` were) or carried from its E120 sibling —
 substantial further RE. CPU-level execution and inspection work **today**.
 
+### HLE lab bring-up — how far the full menu boots, and the two walls (2026-11-15)
+Goal of this pass: run the **full HLE lab** (`src/lab/menu.mjs` `PlayLab`, the path `modelcheck`/scenario
+tests drive) under `OM_EMU_MODEL=E113` far enough that the menu is usable. The lab boots the reference
+body's own init functions natively, located through the E143→E113 address map, and asserts each subsystem's
+observable behaviour. The pass drove that boot blocker-by-blocker; each fix was measured, not guessed.
+
+**Fixes landed (verified, zero regression on E143/E120 — both still boot `state=264`):**
+- **`board.bus_ram` — a model-scoped extra backed bus range.** E113's registry bootstrap (`0x50040aeb`)
+  verifies a 256 KiB NVRAM-backup block at bus `0xBFF8A000` (hardcoded `mov -1074225152,a0`), a region the
+  OM-1 reference never touches, so the bus faulted (fault 2, unassigned). An image uint32 scan found four
+  contiguous store bases (`0xBFF8A000`/`0xBFFCA000`/`0xBFFEA000`/`0xBFFFA000`): a backup partition
+  `0xBFF80000..0xC0000000`. `src/dev/bus.mjs` now takes board-given extra `[base,size]` ranges (served
+  lazily-zero like the live-view banks → the checksum fails → the firmware's blank-init path runs);
+  `src/machine.mjs` wires them from `BOARD.bus_ram`; `MODELS.E113.board.bus_ram = [[0xBFF80000,0x80000]]`.
+  With it the **registry bootstrap passes fully** — a large subsystem, proving the port generally works.
+- **`cflush_returns` hand knob.** E113's registry calls the cache-flush primitive from a site
+  (disasm `0x50041b48`) the E143-shaped lab didn't list; added as E113's own measured value.
+- **`lab_pri` for E113's 16-level kernel.** The lab's injected home task sits at priority 60, below E143's
+  1..69 firmware tasks. E113's µITRON has only 16 priority levels (tasks 1..13), so 60 is `E_PAR`;
+  `MODELS.E113.lab_pri = 14` pins it just below all firmware. Default stays 60 for the E143 family.
+
+With these the lab reaches the **settings-DB init** — i.e. past registry + property-store init.
+
+**Wall 1 (EVF path) — the settings-store subsystem is different code, not relocated.** The lab asserts the
+blank-camera DB-init triggers exactly one flash-save; on E113 it triggers zero (`menu.mjs:747`). Diagnosis,
+three independent facts: (a) the map places E143's DB-init `0x503c5473`→E113 `0x50173d5c` and flash-save
+`0x503eee94`→`0x50203a74`, but a coverage trace shows E143's DB-init executes **5302** instructions /576
+code ranges while E113's mapped target executes **538** /100 — an order of magnitude less, so the target is
+not the real DB-init; (b) disassembling `0x50203a74` shows a 16-byte-sp-buffer helper (two `call`s to
+`0x50042bd7`/`0x50213104`, then `strcpy`-style loops), categorically not a flash-save — no flash-driver
+cluster, none of E143's `0xF001E` flash constant (**0 occurrences** anywhere in E113); (c) E143's distinctive
+store string `damage_info uninitialized` is **absent** from E113. The E-M10's 2014 store module was rewritten
+by the 2022 OM-1; it has no address-mapped analog. `dbSave` was already deferred in the fact layer for the
+same reason — this pass confirms the divergence runs through the whole subsystem, and the lab's
+`_s_flash_save` caller/print asserts are E143-shaped on top. Closing it means re-HLE-ing E113's own store
+path (find its real DB-init + flash-save by hardware/behaviour, then model-specific assert logic), not an
+override.
+
+**Wall 2 (TFT path) — display-queue divergence.** `menu.mjs:1055` via `play.mjs:823`: a synchronous send to
+queue 73 (from disasm `0x500545c3`) whose receiver doesn't run in the lab — the same class of structural
+2014-vs-2022 divergence in the display pipeline.
+
+**Honest status:** the tractable parts of E113's full-menu bring-up are done and regression-free (registry +
+property-store init now pass); the two remaining walls are each a per-subsystem reverse-engineering effort
+(E113's own store and display-queue code), not bounded port overrides. `modelcheck E113` / full menu is
+therefore **not** reached this pass. No result was fabricated to claim otherwise.
+
 ## omcap — `github.com/HolmHaensel/omcap` (GPL-3)
 Wi-Fi and USB tethering for the E-M1 Mark I. Covered in `../usb-protocol/wifi-api.md`.
 
