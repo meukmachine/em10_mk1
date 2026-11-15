@@ -219,36 +219,46 @@ makes the lab's store-init assertion **model-aware**: E113 carries `db_init_save
 genuinely writes no flash on init, so zero is the correct expectation, not a failure. Boot now passes registry
 init, property-store init **and** settings-DB init.
 
-**Wall 2 (device open / display pipeline) — characterised to the instruction, OPEN.** Past the store, both the
-TFT and EVF boot deadlock at the display device **open** (`display.mjs` `open(device)` → `display_cmd(2, …)`,
-which runs the display task body synchronously). Two firmware tasks deadlock, both parked in the same
-timeout-wait wrapper **`0x50030118`** (a mid-level `0x5003xxxx` RTOS wait — arg d3 = timeout at `(40,sp)`,
-calls deeper `0x50032f88`/`0x50032df0`; not OlyEvWt, not a bounded hook point) on event-flag words in the
-display cluster around `display.frame_wait` (`0x7d9b05a0`):
+**Wall 2 (device open / display event-flag handshake) — characterised to the instruction, OPEN.** Past the
+store, both the TFT and EVF boot deadlock at the display device **open** (`display.mjs` `open(device)` →
+`display_cmd(2, …)`, which runs the display task body synchronously). The deadlock is an **event-flag
+handshake**, not the GUI display-sync: E113's display code uses its own event-flag primitive family —
+**`0x50030118` is the wait** (arg `(4,sp)` = timeout; the 28 ms frame wait passes `mov 28,d0`, the handshake
+waits pass `mov -1,d0` = infinite), and **`0x500300c9` / `0x5003004e` are the matching set** (both verified
+by disassembly: `movhu (word),d0; … ; call 0x500300c9`). These are a `0x5003xxxx`-region OlyEv wrapper the
+RTOS stand-in does not know (it hooks the `0x5002bxxx` OlyEvWt). Three cluster flags around
+`display.frame_wait` (`0x7d9b05a0`) are involved, two of them waited infinitely:
 
-- **Task 145** (lab home, running the OPEN body) blocks at `movhu (0x7d9b056e),d0; call 0x50030118` at
-  `0x5021d1fe`. Chain: display loop `0x5021a036` → `0x5021a3e5` (loop call `0x5021a3e0`→`0x5021d044`) →
-  `0x5021d0b5` → `0x5021d29c` → `0x5021d205`.
-- **Task 131** (the display worker — E113's `extra_tasks` entry `0x5021c82c`) blocks at
-  `movhu (0x7d9b05bc),d0; call 0x50030118` at `0x5021c8e5`.
+- **Task 145** (lab home, running the OPEN body) blocks at `mov -1,d0; … movhu (0x7d9b056e),d0;
+  call 0x50030118` at `0x5021d1fe` — an **infinite** completion wait. Chain: display loop `0x5021a036` →
+  `0x5021a3e5` (loop call `0x5021a3e0`→`0x5021d044`) → `0x5021d0b5` → `0x5021d29c` → `0x5021d205`.
+- **Task 131** (display worker — E113's `extra_tasks` entry `0x5021c82c`) blocks at `mov -1,…; movhu
+  (0x7d9b05bc),d0; call 0x50030118` at `0x5021c8e5` — infinite wait on its own input flag, which the same
+  module also *sets* at `0x5021c7be` (`call 0x500300c9`).
+- The frame flag `0x7d9b05a0` is waited with a 28 ms timeout at `0x50224454`; the display task body also
+  waits (`0x50224c76`) and sets (`0x50224cbe`, `call 0x500300c9`) the completion flag `0x7d9b056e`.
 
-Interpretation: the OPEN body waits for flag `0x7d9b056e` (which the display worker task 131 sets on
-completion), but task 131 is itself parked waiting on its own input flag `0x7d9b05bc` — a request the lab never
-routes to it. This is the display-sync handshake. E120 (sibling, 2014-adjacent) boots EVF to `state=264`
-through this same open because its FACTS carry `display.sync` (and the `S-DISPSYNC` stand-in routes the
-handshake); E113's `display.sync` is **undefined** — the fact finder (`facts.mjs:639+`) recognises only the
-E118-family and E143-family forms of the sync module, and the E-M10's 2014 module is a third form it does not
-match, so no `display.sync` fact is placed and the lab cannot drive task 131. Closing it means HLE-ing E113's
-own display-sync module (locate its request / image-sync / sync-set from E113's bytes with E120 as template,
-either as a `models.mjs` override or by extending the `DISPLAY_SYNC` finder for the third form, then verify
-`S-DISPSYNC` releases the `0x50030118` waits) — a per-subsystem reverse-engineering effort, not a bounded
-override. Added as `extra_tasks: [0x5021c82c]` so task 131 at least exists; the missing piece is the sync fact
-that connects the two waits.
+Interpretation: the OPEN body waits forever for flag `0x7d9b056e` to be set by the display task body / worker,
+but that set only runs inside firmware paths (a frame callback and the worker task 131) that the lab does not
+drive — the lab's `S-FRAMEWAIT` pulses only the single 28 ms frame flag `0x7d9b05a0`, not the two
+infinite-wait handshake flags, and nothing bridges set→wait for the `0x50030118` family. E120 (sibling, E118
+family) boots EVF to `state=264` through its open because its open is structured differently (**E120 has no
+frame_wait at all** — `facts.mjs:1041`); E113's 2014 display open is the frame-synced multi-flag handshake
+above, which has no E120 analogue to template. `extra_tasks: [0x5021c82c]` already adds task 131 so it exists;
+the missing piece is driving the `0x50030118` event-flag handshake (teach the RTOS stand-in the
+`0x50030118`/`0x500300c9`/`0x5003004e` family and/or extend `S-FRAMEWAIT` to pulse the handshake flags, then
+verify the worker does meaningful work rather than running on a pulsed-but-empty flag). A per-subsystem
+reverse-engineering effort on E113's display pipeline, not a bounded override.
+
+(Correction: an earlier draft of this section attributed the wall to a missing `display.sync` fact / the
+`S-DISPSYNC` stand-in. That was wrong — `S-DISPSYNC` releases GUI step-end synced *updates* by calling
+image-sync/sync-set functions; it does not drive this open-time `0x50030118` event-flag handshake. The cause
+is the event-flag family above, confirmed by disassembly of both the waits and their sets.)
 
 **Honest status:** registry init, property-store init and the settings-DB store wall (Wall 1) now pass and are
 regression-free (test-pure 273/273, purity 255/255; E143 tft `state=264`, E120 tft/EVF `state=264`). Both E113
-paths now reach and stop at the device-open display-sync wall (Wall 2), which is pinned to the exact two waits
-above but is a genuine display-pipeline re-HLE, not a port override. `modelcheck E113` / fully-usable menu is
+paths now reach and stop at the device-open event-flag-handshake wall (Wall 2), which is pinned to the exact
+waits and sets above but is a genuine display-pipeline re-HLE, not a port override. `modelcheck E113` / fully-usable menu is
 therefore **not** reached yet. No result was fabricated to claim otherwise.
 
 ## omcap — `github.com/HolmHaensel/omcap` (GPL-3)
