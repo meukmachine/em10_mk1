@@ -123,16 +123,40 @@ CameraCommon 0x509af647 (0x7e34)
          => *(a0) = 0xbfd2a000  (the garbage that propagates up and is dereffed)
 ```
 
-So the lookup bottoms out in the **display driver** (bank 0x7db6, runtime `0x7db6ba1c`): a table
-whose entry (or the slot `0x501d59fc` returns a pointer into) is garbage because the lab's E113
-bring-up never populates it. **This is the same subsystem as Wall B** — Wall B's `0x6055f944`
-geometry global and OSD-guard geometry, and Wall C's display-driver table, are all left
-unset/garbage by the **E113 display init that is not (fully) ported**. The leading root remains
-`FACTS.E113.display.sync` null + E113's third, unported display-sync API form
-(`api_disp_Disp_Sync_Update_Osd` / `api_disp_Disp_Sync_Force_Update`; see
-`memory/e113-boot-wall3.md`). Porting that one display-sync form is the single change that
-plausibly clears **both** the menu (Wall C) and the EVF (Wall B) paths — the highest-leverage
-next task.
+So the lookup bottoms out in the **display driver** (bank 0x7db6). The dispatch is `0x501d59fc`,
+a 19-entry jump table at runtime `0x7dbfc33c` keyed by the component code (0..18). Its cases read
+a **table base pointer held in RAM at `0xa0a665a8`** (a sibling region, `0xa0a665d4` etc.), then
+index it by the instance `<< 4`. That `0xa0a66…` region is **uninitialized in the lab**, so the
+base pointer (or the entry it points at) is garbage — the `0xbfd2a000` that propagates up and is
+dereferenced. **Confirmed live** (scratchpad/wallc_tbl.mjs, a hook reading sim memory at the
+garbage return): at the faulting return `0xa0a665a8 = 0x00000000` and `0xa0a665d4 = 0x00000000` —
+both base pointers unset, exactly as the disassembly predicts.
+
+**The init is a display-driver command, and the lab never issues it.** The driver's command
+handler (dispatch `0x501d6a70`, cmp of codes 2/3/17/11/12/18) has a **command 12** case
+(`0x501d6ada` → `0x501d6ae7`) that loads the base-pointer table address `0xa0a665a8` with size
+512 and jumps to the fill/clear routine `0x501d6b87` — i.e. command 12 is the routine that sets
+up the `0xa0a66…` driver tables. E113's lab bring-up never issues it, so the tables stay garbage.
+This is **exactly the shape of Wall A**: a skipped bring-up init, reached in firmware only through
+a path the HLE boot does not walk, that the lab must run natively (as it now does for the
+timer-pool seed).
+
+### Correction — this is NOT the display-sync (`display.sync`) gap
+
+An earlier revision of this doc claimed porting E113's third `display.sync` API form would clear
+**both** Wall C and Wall B. **That was wrong for Wall C** (and is unproven for Wall B). The lab's
+`display.sync` consumer is **S-DISPSYNC** (src/lab/camapp.mjs), a **per-step release** run *after*
+each nav/idle step to commit the GUI's pending display buffers — see its own comment, "After each
+step the lab releases each device". **Wall C faults during initial bring-up, before any step and
+before any S-DISPSYNC release runs**, so S-DISPSYNC cannot populate the table Wall C needs. Porting
+the `display.sync` form remains a real porter gap (`FACTS.E113.display.sync` is null; E113 uses a
+third form, `api_disp_Disp_Sync_Update_Osd` / `api_disp_Disp_Sync_Force_Update`, whose request
+body is `0x501fdcb1` and image-sync body `0x501fdf8c`, structurally a near-record form with 15/16/18
+code-compares but non-`_Multi_Ext` names and a type-in-d0 convention), but it is a **per-step
+display-commit** feature, not the fix for either boot wall.
+
+**Highest-leverage next task (corrected):** issue display-driver **command 12** (populate the
+`0xa0a665a8` tables) during E113 bring-up — the direct analogue of the Wall A timer-pool seed.
 
 Probe notes: scratchpad/wallc.mjs uses `NavSession.lab_created` observe-hooks. Observe-hooking
 the `calls` site itself perturbs control flow (the lab's pass-through hook on a `calls` loops),
@@ -158,19 +182,30 @@ So **the divu and the GUARD are two faces of one skipped init**: `0x6055f944` is
 global, the OSD guard geometry is another; both would be set by E113's display-geometry init,
 which the lab's E113 bring-up does not run. `native_init` (OSDDRAW_INIT) *does* run clean for
 E113 (PlayLab is an OsdLab) — so the missing write is a separate runtime display path, not the
-per-step S-DISPSYNC release and not native_init itself. The `FACTS.E113.display.sync` null and
-the third unported sync form (see related-projects.md and `memory/e113-boot-wall3.md`) remain
-the leading suspect for the init that sets these, but the link to the `0x6055f944` write is
-still UNPROVEN.
+per-step S-DISPSYNC release and not native_init itself. **`display.sync` is no longer the leading
+suspect even here:** S-DISPSYNC is a per-step commit that runs *after* bring-up, whereas
+`0x6055f944` is read by H-UIIN during `play_bring_up`, so the write that sets it must be a
+bring-up-time init, not the per-step release. Given Wall C turned out to be a skipped
+bring-up driver-table init (display-driver command 12, above), the more likely root for Wall B is
+**a similarly skipped display/OSD-geometry bring-up init** — to be identified. The link from any
+`display.sync` port to the `0x6055f944` write is UNPROVEN and now looks unlikely.
 
 ## Honest bottom line
 
 The "menu fully usable" goal is **not met**. Wall A (H-TIMER) is now **cleared** — the generic
 timer-init port that no fixed-table body cleared before (including the reference E120) now
 works, and the E113 menu boot reaches deep app bring-up. The current blocker is **Wall C** (the
-CameraCommon singleton returning a garbage component object), with **Wall B** still ahead on the
-EVF path. Each is a genuine, bounded reverse-engineering task; none is a config tweak. No test
-has been made to pass by faking it.
+CameraCommon singleton returning a garbage component object), now root-caused to a **skipped
+display-driver table init (command 12, populating the `0xa0a665a8` region)** — the direct
+analogue of the Wall A timer-pool seed, and the corrected next task. **Wall B** (EVF) is a
+separate skipped bring-up init still to be identified. Each is a genuine, bounded
+reverse-engineering task; none is a config tweak. No test has been made to pass by faking it.
+
+**Course correction recorded this session:** the previously-planned "port E113's third
+`display.sync` form" was shown **not** to be the fix for either wall — `display.sync` drives the
+per-step S-DISPSYNC commit, which runs after bring-up, while both walls are bring-up-time inits.
+The `display.sync` form is still a real (separate) porter gap for per-step display commits, but it
+was retired as the wall fix before any time was sunk into the large deriver change.
 
 See also: `memory/e113-boot-wall3.md`, `docs/om-emu/e113-touch-read-const.md`,
 `docs/mods/related-projects.md` (Wall-B EVF analysis).
