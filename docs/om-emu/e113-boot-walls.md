@@ -390,6 +390,47 @@ the `0x60000000` struct must be worked out so every OPEN consumer stays consiste
 95/95 + facts 273/273 + pure 255/255 after any lab change. Probes: `scratchpad/walle_seed.mjs`,
 `walle_trace.mjs` (reg_buffer + hang-block backtrace), `wallb_scpu.mjs`, `wallb_bt.mjs`.
 
+## Update 2026-11-16 (e) — Wall E cleared (committed stand-in), Wall F reached
+
+Per the user's decision ("Struct stand-in seed"), Wall E is closed with a documented stand-in,
+wired through the normal board/model/lab path (no probe-only hack):
+
+- **`src/machine.mjs`** — maps a RAM window for `BOARD.display_planes` (a plane aperture backing).
+- **`src/fw/models.mjs`** (E113 only) — `board.display_planes = { base: 0x40060000, size: 0x40000 }`
+  (inside the aperture `0x500d65d2` validates) and a `boot_seeds` list (`[addr, value, width]`).
+- **`src/lab/menu.mjs`** — `seed_boot()` writes `MODEL_INFO.boot_seeds` to DRAM in `kernel_display`
+  **after** `start()` (which zeroes the `0x60000000` struct) and **before** `open(device)` reads the
+  plane pointers. No-op on models without `boot_seeds` (E143 golden untouched).
+
+`boot_seeds` folds in both open stand-ins: Wall B (`0x6055f944 = 0x800`, the serial-flash divisor)
+and Wall E (`0x60000014/18/30/34/40/5c = 0x40060000`, the display-buffer plane pointers). Each is
+labelled a stand-in in the source, not a HW byte-match. With this committed, an E113 `tft` nav boot
+runs ~18.6 s and the DISPLAY-OPEN hang is **gone**; facts 273/273 + pure 255/255 stay green.
+
+Boot now stops at **Wall F — inter-CPU handshake** (`kernel.mjs:119` throws rather than hang):
+
+```
+inter-CPU handshake with CPU 1 (0x5001258b) from 0x7d9a7344 (disasm 0x50016324): only one CPU in the lab
+```
+
+`0x5001258b` is a **multi-core rendezvous / IPI barrier**. It reads this core's index from `(0x8050)`,
+walks the per-CPU TCB table at `0x8ff00004[cpu]`, then **spins on the IPI flag register `0x8ff00000`**
+until it reads `(1<<d2)-1` — i.e. every participating core has set its ready bit (`movhu (0x8ff00000)`
+… `cmp d1,d0` … `setlb`/`lne` spin at `0x500125fb`). The dispatch side is `0x500127cb` (posts to the
+target CPU indexed from the per-CPU struct `+324`). The flag reg `0x8ff00000` is referenced 27× across
+the image — this is a pervasive core-sync primitive, not a one-off. In a one-CPU lab the other cores'
+bits never set, so the real firmware would spin forever; the lab throws at the primitive instead.
+
+This is the **first architecturally new wall** (multi-core), distinct from the memory-seed walls. The
+lab already has partial second-core machinery — `src/lab/cpu2.mjs` (a `--cpu2 native` path that runs
+core 2's code, with its own `xcpu_wait` park) and `src/lab/play.mjs`'s XCPU reply-flag model
+(`XCPU_FLAG`/`_xcpu_wait_return`, wired for the E143 **playback** path, not the E113 nav/menu path).
+Two broad fixes: **(a) barrier stand-in** — at each rendezvous, set the awaited `0x8ff00000` ready
+bits so the barrier passes immediately (fast, same stand-in spirit as the seeds; the work the other
+core would have done is skipped, surfacing the next wall); or **(b) run the other core(s) natively** —
+extend the `cpu2.mjs` / `--cpu2 native` machinery to the E113 nav path so the rendezvous completes for
+real (faithful, heavier). Probe: `scratchpad/wf_check.mjs` (clean E113 boot via the committed seeds).
+
 ## Honest bottom line
 
 The "menu fully usable" goal is **not met**, but two of the three walls are down. Wall A
@@ -405,9 +446,12 @@ the firmware image (only blk00 + the resource block exist) and the lab does not 
 controller, so the block stays 0 and the divisor is 0. The lab already lists this init as a known
 HLE gap (`menu.mjs:752`). Per the user's decision, Wall B is closed with a **documented stand-in**:
 `0x6055f944 = 0x800` (confirmed — clears the divu, settles the OSD guards, matches the helper's
-compare-against-2048). Behind it sits **Wall D** — GUI_CREATOR's E113 display/CPU init needs a stub
-page (`0x98700000`) and a satisfied completion poll (`0x5005F6AC`), both standard lab mechanisms
-needing E113 addresses. The menu is **not yet usable**; no test has been made to pass by faking it.
+compare-against-2048). Behind it sat **Wall D** (GUI_CREATOR display/CPU init — `0x98700000` stub
+page, cleared) and **Wall E** (DISPLAY-OPEN reading an unpopulated `0x60000000` display-buffer struct
+— cleared with the committed `boot_seeds` + `display_planes` stand-in, see Update (e) above). The boot
+now reaches **Wall F**, the first multi-core wall: an inter-CPU rendezvous (`0x5001258b`) that spins on
+the IPI flag register `0x8ff00000` for the other cores' ready bits, which never arrive in a one-CPU
+lab. The menu is **not yet usable**; no test has been made to pass by faking it.
 
 **Course corrections recorded (two dead ends retired):** (1) the "port E113's third `display.sync`
 form" theory — `display.sync` drives the per-step S-DISPSYNC commit, which runs after bring-up,
