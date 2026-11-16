@@ -262,6 +262,72 @@ completion poll, both standard lab mechanisms needing E113 addresses. Not a fabr
 menu does not yet reach a usable state. Probes: `scratchpad/wallb_seed.mjs` (seed+stubs harness),
 `wallb_gate2.mjs` (gate regs), `wallb_bt.mjs` (SRAM-stack backtrace).
 
+## Update 2026-11-16 (c) — Wall D cleared at the poll; Wall E = DISPLAY OPEN fatal
+
+Wall D's two sub-blockers are now handled as standard lab mechanisms (committed in `src/fw/board.mjs`,
+E118 family):
+
+- **`0x98700000` stub page added.** E113's display/CPU init writes/polls a 6th serial channel at
+  `0x98700000` (RMW `or 256`; writes `25 → 0x98700004`, plus `0x9b801328/133c`), denied by default.
+  It is now an E118-family `stub_pages` entry. Safe for the siblings (E118/E120/E122/E-M5II): the
+  page is denied by default, so any body that already boots never reads it — the stub is inert unless
+  accessed. (E143 is a different family entirely.)
+- **`[0x9870001C, 64]` stub_preset added.** The completion poll at disasm `0x50034232`
+  (`bls` loops while `*(table[*(0x8ff0007c)]) ≤ 0`, table at disasm `0x5005F6AC`, idx0 = channel
+  status reg `0x9870001C`) needs a `> 0` value. `64` matches the already-stubbed paired sibling
+  channel `0x98400000` (`[0x9840001C, 64]`). Verified: boot advances past the poll.
+
+**Wall E (new frontier): the "DISPLAY cmd 2 OPEN tft" bring-up step fatals.** With `f944 = 0x800`
+seeded and the `0x98700000` stub in place, the menu bring-up reaches the display-task OPEN-tft step
+(lab step label `DISPLAY cmd 2 OPEN tft (code 1)`) and hits an **infinite-loop panic**: disasm
+`0x500d675a` (`ca 00  bra 0x500d675a`, self-loop) → lab reports `fault=7` (budget guard). The hang is
+the tail of a fatal/assert handler whose entry is `0x500d65d2` (same function, +0x188).
+
+Call path into the fatal (SRAM scratch stack `sp≈0x47000xxx`, so the stack scan is noisy — these are
+the reliable anchors): display-open `0x5000f050 → 0x50006cbc → 0x5003a44f → … → error-logger
+0x500012c0 → call 0x500d65d2` (fatal). Confirmed the caller via **MDR** at the fatal entry =
+`0x7d99232e` = disasm `0x5000130e` = the error-logger's `call 0x500d65d2` return site (the `sp+0`
+stack slot `0x50001ea0` was stale — do not trust raw SRAM stack slots here). The error record fields
+at the hang: `d2 = a3 = 0x1300`, `a2 = 0x20000`, fatal arg `d0 = 0x20000`, `d3 = 0x60000038` (a DRAM
+object pointer). The error-logger (`0x500012c0`) logs `a2` + `(4,sp)` via `0x50008a33`, stores a
+record into a table keyed off counter `0xa0a433d0` (capped at 100 entries) using base `0x2c000000`,
+then calls the fatal handler.
+
+**Exact trigger found.** The error-logger entry is `0x5000128c`, signature
+`fatal_error(d0 = code, a0 = subject, d1 = extra)` — it logs, stores a record (table keyed off
+counter `0xa0a433d0`, base `0x2c000000`), then unconditionally calls the fatal handler. Its caller
+(MDR at entry = `0x7d9cb46f` = disasm `0x5003a44f`) is the display-OPEN sub-function at
+**`0x5003a448`**:
+
+```
+5003a43c: mov d3,a0            ; d3 = 0x60000038  (the display-buffer descriptor object)
+5003a43e: mov (8,a0),a0        ; a0 = *(0x60000038 + 8)  -> the framebuffer pointer == NULL
+5003a441: clr d0              ; code  = 0
+5003a442: mov 131072,d1        ; extra = 0x20000  (128 KiB)
+5003a448: call 0x5000128c      ; fatal_error(code=0, subject=*(obj+8)=NULL, size=0x20000)
+```
+
+So E113's display OPEN-tft requires a **128 KiB (`0x20000`) framebuffer** whose pointer is stored at
+`*(0x60000038 + 8)`; in the lab that field is **NULL** (verified: `a0 = 0` at the error-logger entry)
+because the allocation step that fills it never ran. The fatal is an allocation/null-buffer assert,
+**same class as Wall D** (a display bring-up step the lab does not drive for E113) but one layer deeper.
+
+**Structure of the descriptor.** `0x60000038` is a hardcoded global: `0x5003a280` does
+`mov 1610612792, d3` (`1610612792 = 0x60000038`). Grepping the disasm for that immediate (objdump
+prints immediates in **decimal** — a hex grep misses them) finds exactly two sites, and both *read*
+it: the open path `0x5003a280`, and `0x50039fa9` which does `udfu01 28, d0; mov d0, a0;
+add 0x60000038, a0` — i.e. **`0x60000038` is the base of a 28-byte-entry array of display-buffer
+descriptors** (`entry[i] = 0x60000038 + 28·i`), each with `+4` and `+8` (the buffer pointer) fields.
+There is **no absolute write** to the array anywhere in the image, so it is filled register-indirect
+by a display-buffer init (passed the base as a pointer) that the lab does not run for E113 — leaving
+every `+8` buffer pointer NULL. The required buffer size is `0x20000` (128 KiB) per the assert.
+
+**Not yet solved.** NEXT: locate the display-buffer-array init that allocates the `0x20000` buffers
+and stores their pointers into the `0x60000038[28·i]` array, then either run it as an E113 bring-up
+step or seed the descriptors (same pattern as the other display stand-ins). Probes:
+`scratchpad/wallb_scpu.mjs` (step-label + error-logger-entry MDR backtrace), `wallb_bt.mjs`,
+`wallb_seed.mjs`.
+
 ## Honest bottom line
 
 The "menu fully usable" goal is **not met**, but two of the three walls are down. Wall A
