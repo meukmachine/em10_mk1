@@ -431,6 +431,45 @@ core would have done is skipped, surfacing the next wall); or **(b) run the othe
 extend the `cpu2.mjs` / `--cpu2 native` machinery to the E113 nav path so the rendezvous completes for
 real (faithful, heavier). Probe: `scratchpad/wf_check.mjs` (clean E113 boot via the committed seeds).
 
+## Update 2026-11-16 (f) — Walls F/G cleared (inter-CPU rendezvous stand-in), Wall H reached
+
+Per the user's **"Barrier stand-in"** decision, the inter-CPU rendezvous is stood in rather than run
+on a second core. It turned out to be **two** primitives on the menu bring-up path, cleared together:
+
+- **Wall F — the doorbell post.** `XCPU_WAIT` (runtime `0x7d9b3fbb`, disasm `0x500127cb` =
+  `A(0x5001258b)` for E113), an inter-core doorbell post/wait to a core the one-CPU lab does not run.
+  Direct-called (the `call 0x500127cb` at disasm `0x5001631f`). Stood in by returning as its own
+  `ret [d2,d3,a2],20` would — `hle.finish()`, which recovers the saved-reg mask + frame size from the
+  entering `CALL` at `mdr` and returns to the caller with the stack/registers consistent.
+- **Wall G — the IPI barrier.** `0x500125a3` (identity-mapped: E143 canonical == E113). Reached
+  **indirectly** through a per-CPU vtable (`calls (a0)`, pointer at `perCPU+304..`), so `finish()`'s
+  `CALL`-decode does not apply — `finish_calls()` handles the `calls`-reached case. The barrier reads
+  the core count from `perCPU+380` (`d2`), sets its own ready bit in the `0x8ff00000` halfword
+  (`movhu (0x8ff00000),d1; asl d0,d3; or d3,d1; movhu d1,(0x8ff00000)` at `0x500125db..ea`), then
+  spins at `0x50012605`/`0x5001260b` until the halfword reads `(1<<d2)-1` — the other cores' bits,
+  which never arrive in a one-CPU lab. Native, that spin is a `fault=7` deadman (`dc value 0x00002000`).
+
+**Implementation.** `MODEL_INFO.xcpu_standin` carries `{ barriers: [0x500125a3] }`. In
+`kernel.mjs install_guards`, when the fact is set, the lab hooks `XCPU_WAIT` **and** each barrier
+address with one handler (`xcpuReturn`) that does `try { finish() } catch { finish_calls() }` — the
+same return pair the lab's own `skip()` uses for the `IPI`/`SELFTEST`/`BOOTSYNC` barriers. Models
+without the fact keep the hard stop. The earlier bespoke `hle.return_from_call` helper was removed:
+`finish()` is byte-identical to it for the direct-call case, so it was redundant. The other cores'
+side effects are skipped — a documented E113 stand-in that surfaces the next wall rather than hanging.
+
+**Result.** Boot advances from ~18.6 s (the Wall F throw) past the whole multi-core rendezvous to
+**~23.8 s**, where the kernel reaches its **task-startup sequence** and tries to start firmware task
+entry `0x50031c0c` — *"not modelled"* (**Wall H**). That entry is E113's **CPU-connection init task**
+(its log strings are `CPUCONN0`, `CPU1!`, `CPU2!`, `SCS`, `SCE`, `OIE`; it zeroes `0x8ff0018c`, next
+to the board's `core_byte 0x8ff00188`). Allowing it to run natively (`extra_tasks`) lets it return and
+exposes the **next** task start (`0x50032ed8`) — i.e. Wall H is a **chain** of kernel init-task starts,
+the same shape E143 models with its `extra_tasks` lists + task modules (`cpu2.mjs` H-CPUCONN0,
+`camapp.mjs`, `take.mjs`). This is a new, larger category of work than the single-seed walls A–G.
+
+Verified green with the stand-in: E143 golden **95/95**, facts **273/273**, pure **255/255** (the fact
+is E113-gated, so the golden model is untouched). Committed in `om-emu-src` (branch `e113-port`). Probe:
+`scratchpad/wf_check.mjs` lands cleanly at the `0x50031c0c` task wall.
+
 ## Honest bottom line
 
 The "menu fully usable" goal is **not met**, but two of the three walls are down. Wall A
@@ -449,9 +488,12 @@ HLE gap (`menu.mjs:752`). Per the user's decision, Wall B is closed with a **doc
 compare-against-2048). Behind it sat **Wall D** (GUI_CREATOR display/CPU init — `0x98700000` stub
 page, cleared) and **Wall E** (DISPLAY-OPEN reading an unpopulated `0x60000000` display-buffer struct
 — cleared with the committed `boot_seeds` + `display_planes` stand-in, see Update (e) above). The boot
-now reaches **Wall F**, the first multi-core wall: an inter-CPU rendezvous (`0x5001258b`) that spins on
-the IPI flag register `0x8ff00000` for the other cores' ready bits, which never arrive in a one-CPU
-lab. The menu is **not yet usable**; no test has been made to pass by faking it.
+reached **Walls F/G**, the first multi-core walls (inter-CPU doorbell post `0x500127cb` + IPI barrier
+`0x500125a3` spinning on `0x8ff00000` for the other cores' ready bits), now **cleared** with the
+user-approved rendezvous stand-in (see Update (f) above). The boot now reaches **Wall H**: the kernel's
+**task-startup sequence**, starting with the CPU-connection init task `0x50031c0c` — a chain of
+kernel init tasks (a new, larger category of work than the single-seed walls A–G). The menu is **not
+yet usable**; no test has been made to pass by faking it.
 
 **Course corrections recorded (two dead ends retired):** (1) the "port E113's third `display.sync`
 form" theory — `display.sync` drives the per-step S-DISPSYNC commit, which runs after bring-up,
