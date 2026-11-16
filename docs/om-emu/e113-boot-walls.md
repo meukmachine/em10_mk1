@@ -10,7 +10,8 @@ Golden body stays E143 (95/95 checks, 273/273 facts).
 |------|----------------|--------|
 | **A — H-TIMER** | `software_timer_init` (display.mjs), before any UI | **CLEARED** (commits this session) |
 | **C — CameraCommon singleton** | app bring-up, `0x509af730` (disasm), fault=2 reading `0xbfd2a000` (an object the registry put just under the 512 MiB chip top) | **CLEARED** — physical DRAM chip is 512 MiB, not the gui-managed top; `dram_chip` board fact |
-| **B — divu-by-zero** | H-UIIN `0x500052a0`, divisor `0x6055f944 = 0` (menu + EVF paths) | **ROOT-CAUSED** — a serial-flash config block the firmware image does not contain and the lab does not model; needs the SPI-flash dump or a documented stand-in |
+| **B — divu-by-zero** | H-UIIN `0x500052a0`, divisor `0x6055f944 = 0` (menu + EVF paths) | **SOLVED (divisor)** — stand-in `0x6055f944 = 0x800` clears it and settles the OSD guards; rest of the serial-flash block still 0 (awaits SPI dump) |
+| **D — GUI_CREATOR display-init** | SRAM-stack init `0x5003402d`: denied read `0x98700000` (`0x5003407e`), then completion poll `0x50034232` (fault=7) | **CHARACTERIZED** — standard lab HLE classes (stub page + completion-flag), need E113 addresses: stub `0x98700000`; satisfy poll word `table[0]` @ disasm `0x5005F6AC` |
 
 Clearing Wall A moved the E113 menu boot from "fails before any UI" to deep inside the app
 bring-up (Wall C, in CameraCommon bank 0x7e34). Clearing Wall C (E113's physical DRAM chip is
@@ -220,6 +221,47 @@ may not byte-match hardware; or (b) modeling the flash controller to serve a con
 image. Both need the field layout worked out so every H-UIIN/OSD consumer stays consistent.
 `display.sync` is **not** involved (retired dead end — it is a post-bring-up per-step commit).
 
+### Update 2026-11-16 (b): stand-in value confirmed `0x6055f944 = 0x800`, and Wall D behind it
+
+Per the user's "documented stand-in seed" decision, convergence harness `scratchpad/wallb_seed.mjs`
+seeds the block in `NavSession.lab_created` (before `bring_up`) and runs the full menu bring-up.
+Result: **`0x6055f944 = 0x800` (2048) is the correct divisor stand-in.** It clears the divu *and*
+drops the OSD fill-stride GUARDs from fatal to non-fatal warnings (the `0x300` guess above left them
+fatal). 2048 matches the helper's own compare-against-2048 at `0x500052d7` — the expected geometry
+pitch. This is a confident, derivable single-field value; the rest of the block stays 0 (documented
+unknown, awaiting the SPI dump).
+
+**Behind the divu is a new wall ("Wall D"): GUI_CREATOR's native display/CPU init hits HLE gaps the
+lab has standard machinery for but has not mapped for E113.** With `f944 = 0x800`, menu bring-up
+(`menu.mjs:498`, `this.call(GUI_CREATOR, …, 200000)`) proceeds deep into a display-controller init
+that runs on an **SRAM scratch stack** (`sp = 0x47000fd8`, a0 = `0x99200084` = CPU0 context). Call
+chain to the faults: `0x50006cbc → 0x500002fc → 0x5003402d` (function writes per-CPU control bytes
+`0x8ff0007c/7d/7e`). Two sequential blockers, both **known lab HLE classes**:
+
+1. **Denied read `0x98700000`** at `0x5003407e` (`mov (a2),d0`; RMW `or 256`; writes 25 to
+   `0x98700004`, plus `0x9b801328/133c`) — an unmodeled peripheral page. Fix class = a **stub page**
+   (like the flash controller's `0x98d00000`, board.mjs stub_pages: "keeps what is written, no HW
+   transfer"). Adding `0x98700000` to the stub pages clears it (harness `STUBS=98700000`).
+
+2. **Infinite completion poll** at `0x50034232` (fault=7, the lab's loop/budget guard): busy-waits
+   `*(table[*(0x8ff0007c)]) > 0`, table at disasm `0x5005F6AC`, index 0. This is a native
+   HW/inter-CPU completion the lab never drives — exactly the class the lab satisfies elsewhere via
+   completion-flag machinery (`menu.mjs` `PANEL_FLAG`/`S-PANELDONE`, `SCPU_WAITS`, and the
+   `this.observe(poll, …)` pattern at `menu.mjs:401-407` that "stores 1 in the word"). E113 needs the
+   equivalent poll word mapped + satisfied.
+
+A related **gate** (not on this path, recorded for later): `0x50031dcd` runs a *different* panel init
+`0x500340d3` only when `*(0x98E00038) | *(0x98E0003C) != 0` (getter `0x5004abfa`, table base
+`0x98E00004`). The region `0x98E00000` is currently mapped non-zero in the lab (it did not fault),
+so that panel init would also run; forcing those gate words to 0 would skip it. Not reached before
+the Wall-D faults, so deferred.
+
+**Net:** Wall B's divisor is solved (`0x800`). "Menu fully usable" now depends on finishing the E113
+display-init port behind it (Wall D): add the `0x98700000` stub page and satisfy the `0x5005F6AC`
+completion poll, both standard lab mechanisms needing E113 addresses. Not a fabricated pass — the
+menu does not yet reach a usable state. Probes: `scratchpad/wallb_seed.mjs` (seed+stubs harness),
+`wallb_gate2.mjs` (gate regs), `wallb_bt.mjs` (SRAM-stack backtrace).
+
 ## Honest bottom line
 
 The "menu fully usable" goal is **not met**, but two of the three walls are down. Wall A
@@ -233,9 +275,11 @@ boot now advances to **Wall B** (`0x500052a0` divu-by-zero, global `0x6055f944 =
 camera's **serial flash** (command port `0x98d01800`, data port `0x98d01804`). That data is not in
 the firmware image (only blk00 + the resource block exist) and the lab does not model the flash
 controller, so the block stays 0 and the divisor is 0. The lab already lists this init as a known
-HLE gap (`menu.mjs:752`). Closing Wall B needs either the camera's SPI-flash contents (the
-[[bootloader-dump-goal]]) or a documented geometry *stand-in* seed — a user/direction decision, not
-a mechanical next step. No test has been made to pass by faking it.
+HLE gap (`menu.mjs:752`). Per the user's decision, Wall B is closed with a **documented stand-in**:
+`0x6055f944 = 0x800` (confirmed — clears the divu, settles the OSD guards, matches the helper's
+compare-against-2048). Behind it sits **Wall D** — GUI_CREATOR's E113 display/CPU init needs a stub
+page (`0x98700000`) and a satisfied completion poll (`0x5005F6AC`), both standard lab mechanisms
+needing E113 addresses. The menu is **not yet usable**; no test has been made to pass by faking it.
 
 **Course corrections recorded (two dead ends retired):** (1) the "port E113's third `display.sync`
 form" theory — `display.sync` drives the per-step S-DISPSYNC commit, which runs after bring-up,
