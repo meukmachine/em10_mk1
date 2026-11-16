@@ -10,7 +10,7 @@ Golden body stays E143 (95/95 checks, 273/273 facts).
 |------|----------------|--------|
 | **A — H-TIMER** | `software_timer_init` (display.mjs), before any UI | **CLEARED** (commits this session) |
 | **C — CameraCommon singleton** | app bring-up, `0x509af730` (disasm), fault=2 reading `0xbfd2a000` (an object the registry put just under the 512 MiB chip top) | **CLEARED** — physical DRAM chip is 512 MiB, not the gui-managed top; `dram_chip` board fact |
-| **B — EVF divu + GUARD** | EVF-only `play_bring_up` H-UIIN (play.mjs:1264) | OPEN, downstream, EVF path only |
+| **B — divu-by-zero** | H-UIIN `0x500052a0`, divisor `0x6055f944 = 0` (menu + EVF paths) | **ROOT-CAUSED** — a serial-flash config block the firmware image does not contain and the lab does not model; needs the SPI-flash dump or a documented stand-in |
 
 Clearing Wall A moved the E113 menu boot from "fails before any UI" to deep inside the app
 bring-up (Wall C, in CameraCommon bank 0x7e34). Clearing Wall C (E113's physical DRAM chip is
@@ -167,34 +167,58 @@ mean that instruction faulted. The decisive test (wallc_run.mjs) uses **no** hoo
 throwing before it executes (earlier wallc_512.mjs) only proves the PC was reached, and misled an
 earlier analysis into "fault still here" under 512 MiB — a false positive now corrected.
 
-## Wall B — the EVF wall: divu-by-zero then OSD GUARD (downstream)
+## Wall B — divu-by-zero (root-caused: a serial-flash config block the lab cannot read)
 
-Reachable only by seeding past the divu. Empirically confirmed this turn
-(`scratchpad/seedprobe.mjs`): splitting `PlaySession.enter` into `NavSession.enter` → seed →
-`play_bring_up`, writing `0x6055f944 = 0x300` after the lab is brought up:
+**ROOT CAUSE FOUND (2026-11-16): `0x6055f944` is a 36-byte config block read from the camera's
+serial flash at boot — data that is NOT in the firmware image and NOT modeled by the lab.**
 
-- Clears the divu at `0x500052a0` (`divu d2,d1`, divisor = global `0x6055f944`, which stays 0).
-- Boot then stops at the **next** wall:
-  ```
-  H-UIIN start: 0x5003407e fault=2  ne ERROR GUARD
-    arg 0x805602dc  value 0x00001600  words 00000510 00000000 02b016e0 166c7800
-  ```
-  Decoded with the engine cmdFill decoder: op=0x10 fill, dst = bus(w2>>>3) = 0x805602dc
-  (== arg), stride = ((w3>>>23)&0x1ff)<<7 = 5632 = 0x1600 (== value). The fill's stride does
-  not match any registered OSD guard.
+The divu helper `0x50005283` (called from H-UIIN dispatch `0x50004061`/`0x5000406d`) computes
+`quotient = (size << 9) / mem16[0x6055f944]`, twice, with no zero guard. `0x6055f944` is 0, so
+`divu` at `0x500052a0` faults (fault=6, divide-by-zero). At `0x500052d7` the helper later compares
+the divisor against **2048 (0x800)**, the natural/expected geometry value — confirming `0x6055f944`
+is a display/OSD pitch, not garbage.
 
-So **the divu and the GUARD are two faces of one skipped init**: `0x6055f944` is one geometry
-global, the OSD guard geometry is another; both would be set by E113's display-geometry init,
-which the lab's E113 bring-up does not run. `native_init` (OSDDRAW_INIT) *does* run clean for
-E113 (PlayLab is an OsdLab) — so the missing write is a separate runtime display path, not the
-per-step S-DISPSYNC release and not native_init itself. **`display.sync` is no longer the leading
-suspect even here:** S-DISPSYNC is a per-step commit that runs *after* bring-up, whereas
-`0x6055f944` is read by H-UIIN during `play_bring_up`, so the write that sets it must be a
-bring-up-time init, not the per-step release. The link from any `display.sync` port to the
-`0x6055f944` write is UNPROVEN and now looks unlikely. **With Wall C cleared, the menu boot now
-reaches this same `0x500052a0` divu directly** (no evf seed needed) — so Wall B is now the single
-active blocker on the menu path, and the likely root is a skipped display/OSD-geometry bring-up
-init that sets `0x6055f944`, to be identified next.
+**Who writes `0x6055f944`:** exactly one init, `0x50003cb2` (populate loop `setlb` at `0x50003d79`).
+It is a **serial-flash read**:
+- zeroes 36 bytes at `0x6055f944`, then calls `0x500016ee`; if that returns −1 it bails (flash not
+  ready) and the block stays 0 — so even the real camera needs flash present here;
+- sets the flash-controller enable bit, then in the loop writes read-commands `0x838 + d1`
+  (`d1` = 0,4,…,32, nine words) to the **flash command port `0x98d01800`** and reads each word
+  back from the **flash data port `0x98d01804`**, storing them into `0x6055f944 + d1`;
+- a sibling read (command `0x800`) folds a word into `0x6055f904`;
+- on success sets the damage/config-initialized mark `0x97f00264`.
+
+**Why the lab has `0x6055f944 = 0`:**
+1. The lab's `store_init` comment (`src/lab/menu.mjs:752-756`) **already names this init a known
+   HLE gap**: *"the boot's init `0x50003cf9` (not run by the lab) has not set (`0x97f00264`)"* —
+   `0x50003cf9` is inside `0x50003cb2`. The lab deliberately does not run it.
+2. Probe `scratchpad/wallb_gate.mjs` (no-seed, hooks on `0x50003946`/`0x5000395f`/`0x50003cb2`
+   before the divu) returns `seen = {}` — the init and its caller are **never invoked at all** in
+   the lab bring-up; it is skipped, not gated-off.
+3. `src/fw/board.mjs:388-394` + `src/fw/models.mjs:729` confirm `0x98d0xxxx` is the **flash
+   controller** register/program page and *"the lab does not model the flash controller"* — its
+   stub page returns 0, so even native-running `0x50003cb2` would read zeros.
+4. The firmware image has only two unpacked blocks — blk00 (loaded) and blk01 (the 25 MiB resource
+   block). **Neither is the serial flash.** The nine config words live in the camera's SPI flash,
+   per-camera, and are not in anything the emulator holds.
+
+H-UIIN genuinely *consumes* this block: the function around `0x50003fc0` copies fields out of it
+(`0x6055f94a`, `f94c`, `f956`, `f958`, …) via `0x5000161d` into a UI object. So the block must be
+populated; this is **not** a lab bring-up bug reaching an init it shouldn't.
+
+**Downstream GUARD (same root):** seeding `0x6055f944 = 0x300` (old `scratchpad/seedprobe.mjs`)
+clears the divu but then stops at an OSD fill-stride GUARD (`stride 5632 = 0x1600`, dst
+`0x805602dc`). That is the same block being inconsistent — the other config words are still 0 — not
+a second independent wall. A correct fix must supply the **whole** consistent block, which is why a
+single-field guess cascades.
+
+**This ties Wall B to the [[bootloader-dump-goal]]:** the authoritative `0x6055f944` values come
+from the camera's SPI flash. Until that flash is dumped, the only ways forward are (a) a documented
+*stand-in* seed derived from the lab's known E113 display geometry (the same HLE-gap pattern as
+`boot_stage`/`sections_loaded`, which write stand-in boot state the lab does not run) — accepting it
+may not byte-match hardware; or (b) modeling the flash controller to serve a constructed config
+image. Both need the field layout worked out so every H-UIIN/OSD consumer stays consistent.
+`display.sync` is **not** involved (retired dead end — it is a post-bring-up per-step commit).
 
 ## Honest bottom line
 
@@ -204,9 +228,14 @@ root-caused not to a skipped init but to the lab undersizing E113's DRAM — the
 512 MiB, while the lab mapped only the gui-managed heap top (~491 MiB), so a registry allocation at
 `0xbfd2a000` (just under the 512 MiB top) was unbacked. Fixed with a `dram_chip` board fact that
 floors the mapped DRAM to the real chip, leaving the `dram_size` heap-top fact untouched. The menu
-boot now advances to **Wall B** (`0x500052a0` divu-by-zero, global `0x6055f944 = 0`), a skipped
-display/OSD-geometry bring-up init still to be identified — now the single active menu blocker.
-No test has been made to pass by faking it.
+boot now advances to **Wall B** (`0x500052a0` divu-by-zero, global `0x6055f944 = 0`), now
+**root-caused**: `0x6055f944` is a 36-byte config block the boot init `0x50003cb2` reads from the
+camera's **serial flash** (command port `0x98d01800`, data port `0x98d01804`). That data is not in
+the firmware image (only blk00 + the resource block exist) and the lab does not model the flash
+controller, so the block stays 0 and the divisor is 0. The lab already lists this init as a known
+HLE gap (`menu.mjs:752`). Closing Wall B needs either the camera's SPI-flash contents (the
+[[bootloader-dump-goal]]) or a documented geometry *stand-in* seed — a user/direction decision, not
+a mechanical next step. No test has been made to pass by faking it.
 
 **Course corrections recorded (two dead ends retired):** (1) the "port E113's third `display.sync`
 form" theory — `display.sync` drives the per-step S-DISPSYNC commit, which runs after bring-up,
