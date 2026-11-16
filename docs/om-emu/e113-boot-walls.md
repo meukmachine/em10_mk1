@@ -322,11 +322,73 @@ There is **no absolute write** to the array anywhere in the image, so it is fill
 by a display-buffer init (passed the base as a pointer) that the lab does not run for E113 — leaving
 every `+8` buffer pointer NULL. The required buffer size is `0x20000` (128 KiB) per the assert.
 
-**Not yet solved.** NEXT: locate the display-buffer-array init that allocates the `0x20000` buffers
-and stores their pointers into the `0x60000038[28·i]` array, then either run it as an E113 bring-up
-step or seed the descriptors (same pattern as the other display stand-ins). Probes:
-`scratchpad/wallb_scpu.mjs` (step-label + error-logger-entry MDR backtrace), `wallb_bt.mjs`,
-`wallb_seed.mjs`.
+**Not a missing `display.init_2nd` fact.** That fact is derived from the trace string
+`[DISP] <COM> :display_init_2nd` (facts.mjs `displayInit2nd`), which **only E125/E129/E132 carry** —
+E113 does not, so the fact is correctly null and no `H-DISPINIT2` step runs. E113's display 2nd-part
+init uses a different mechanism.
+
+**The framebuffer is fixed hardware display-RAM, not a heap allocation.** The OPEN's address check at
+`0x5003a200` compares the buffer address against a table of **fixed plane addresses** —
+`0x400e0000`, `0x40100000`, `0x7fa0fc00`, `0xbffc0a00`, … (the `0x40000000` display-RAM region). So
+`0x60000038[28·i].+8` is meant to hold one of these fixed plane addresses, written by a plane-setup
+init — **not** a 128 KiB `malloc` (the `0x20000` is the plane's size/stride, used by the copy at
+`0x500013f0`, not an allocation request). In the lab the field is NULL because that plane-setup init
+never ran.
+
+### Update 2026-11-16 (d) — Wall E fully root-caused: whole `0x60000000` display-buffer struct is unpopulated
+
+**Correction to the earlier "fatal_error" framing.** `0x5000128c` is **not** a fatal logger — it is a
+**buffer-register / range-validate** routine `reg_buffer(a0 = buffer addr, d0 = flags, d1 = size)`. It
+is called *normally* throughout the plane setup (e.g. `0x500d6a07`'s body calls it with real planes
+`a0 = 0x400e0000, d1 = 0x20000`). It unconditionally tail-calls `0x500d65d2`, which is the actual
+validator and **normally returns**. `0x500d65d2` classifies the buffer (via `0x500d65c9`) and
+**range-checks** the address against the valid framebuffer apertures:
+
+- `0x40060000 .. 0x40690000`  (and buffer+size end in range)
+- `0x80060000 .. 0x80690000`
+- `0x47360000 .. 0x47980000`
+
+A buffer **in range returns OK**; an out-of-range (or NULL) buffer falls through to `0x500d66c8`,
+logs, and **hangs at `0x500d675a`** (`bra .`), which the lab reports as fault 7. `0x500d65d2` itself
+does **not** dereference the buffer — it only range-compares — so a valid in-range pointer satisfies
+it without the region being mapped.
+
+**The real gap: the entire `0x60000000` display-buffer struct is NULL.** The DISPLAY-OPEN-tft sub
+(`0x5003a4xx`) reads **many** plane pointers out of a struct based at `0x60000000` and hands each to
+`reg_buffer`:
+
+```
+0x5003a43e: mov (8,a0),a0     ; a0 = *(0x60000038 + 8)   = entry[0].+8   -> reg_buffer   (plane A)
+0x5003a456: mov (36,a0),a0    ; a0 = *(0x60000038 + 36)  = entry[0].+36  -> reg_buffer   (plane B)
+0x5003a472: mov (0x60000014),a2 ; a2 = *(0x60000014)                      (deref'd below)
+0x5003a478: mov (0x60000018),a0 ; a0 = *(0x60000018)                     -> fill/compare
+0x5003a4b8: mov (4,a2),d0      ; **reads buffer memory** at a2+4  (compared, 0x5003a4be)
+0x5003a4d8: mov (0x60000018),a0 ; a0 = *(0x60000018)     = NULL          -> reg_buffer   (2nd hang)
+```
+
+Verified with `scratchpad/walle_seed.mjs` + `walle_trace.mjs`: seeding only `0x60000040`
+(`= entry[0].+8`) with `0x400e0000` clears the **first** hang, and boot advances to a **second**
+`reg_buffer` call whose `a0 = *(0x60000018) = NULL` → same `0x500d675a` hang. So it is whack-a-mole at
+word granularity: `0x60000014`, `0x60000018`, the `0x60000038` descriptor array (`+8`, `+36` per
+28-byte entry), `0x60000030/34`, etc. are **all** unpopulated.
+
+**None of these fields is absolute-written in the image** (grep of `,(0x600000xx)` finds only status
+fields `+0x74/78/7c/84`, never the pointer fields). They are filled **register-indirect** (base
+`mov 0x60000000, aN` then `mov <plane>,(off,aN)`) by a display-buffer allocator that the lab never
+runs for E113 — the same class of gap as every wall before it, but here it is a whole subsystem
+(multi-plane display-buffer allocation across three physical apertures), not a single stand-in word.
+Also note `0x5003a4b8` **dereferences** a plane (`mov (4,a2),d0`), so a pure range-valid stand-in
+pointer is not enough for every path unless that aperture is also mapped (or the two compared reads
+coincide).
+
+**Fork (next decision).** (a) **Struct stand-in** — seed the whole `0x60000000` display-buffer struct
+with a self-consistent set of in-range plane addresses (and, where a path derefs, back them with lab
+pages), as a documented stand-in (the user's chosen pattern for display gaps); or (b) **run the real
+allocator** — locate the register-indirect display-buffer init that fills `0x60000000` and run it as
+an E113 bring-up step (more faithful, needs the three apertures modelled). Either way the field map of
+the `0x60000000` struct must be worked out so every OPEN consumer stays consistent. Keep E143 golden
+95/95 + facts 273/273 + pure 255/255 after any lab change. Probes: `scratchpad/walle_seed.mjs`,
+`walle_trace.mjs` (reg_buffer + hang-block backtrace), `wallb_scpu.mjs`, `wallb_bt.mjs`.
 
 ## Honest bottom line
 
