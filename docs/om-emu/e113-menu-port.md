@@ -365,6 +365,52 @@ hook breaking set_flg's wake semantics, not real firmware behavior. Use helper-w
 
 Probes this session: `scratchpad/{idle_probe,labprobe,bringup,portchk,scpuchk,xref,mtask}.mjs`.
 
+## FINDING 2026-11-17d — flash done-poll wall CLEARED; next wall = WinMain event-wait (WAI)
+
+**Flash controller status register + mask identified and fixed.** The E113 flash driver's
+done-poll helper is at disasm **0x50001726** (status register pointer `a2` = **0x98d01104**,
+loaded by `mov -1731194620,a2` at 0x50001729). It loops up to 65535 times waiting for
+`(0x98d01104 & mask) == mask`; on timeout it prints `[FLASH]intr status0 BIT` (string ptr
+2107611520 = 0x7d99a180) and aborts. The GUI bring-up calls it from **0x50003d18** (the
+"read before writing" path 0x50003d39) with **mask d0 = 0x9004** (bits 15, 12, 2) — captured
+live by `scratchpad/pollmask.mjs`. The fs-mount (0x5000121b) uses the *same* register but polls
+only bit 13 (0x2000), for which `board.mjs` already preset `[0x98D01104, 0x2000]`.
+
+**Fix (one value):** `src/fw/board.mjs` E118-family `stub_presets` entry widened
+`[0x98D01104, 0x2000]` → `[0x98D01104, 0xB004]` (= 0x2000 | 0x9004). The lab packs presets with
+flags=1 (`display.mjs:575`, enable-only: a read *always* returns the value regardless of the
+mount's write-back), so 0xB004 satisfies BOTH the bit-13 mount poll and the 0x9004 flash
+done-poll, setting only the bits the two known polls sample — no extra/error bits. Inert for
+E120/E122 (stub their whole flash path) and E118 (mount reads bit 13 only). **Result:**
+`[FLASH]intr status0 BIT` no longer prints in clean bring-up → the 0x9004 done-poll passes. This
+flash wall is cleared. (E143 golden unaffected — change is in the E118 board entry; E143/E144 use
+a different entry.)
+
+**Next wall = WinMain parks in WAI, waiting on an unsignaled event flag.** After the flash fix,
+clean E113 `bring_up('tft')` still grounds at firmware idle 0x7d9a730b (fault=7). Direct TCB read
+at the terminal idle (`scratchpad/idledump.mjs`, non-perturbing idle hook) shows
+**WinMain (entry 0x5089a153, TCB 0x6068b580) in state 0x04 = WAI** — word[3] = 0x80004, TCB
+word[6] = 0x6018f1c4 (wait-object / flag CB ptr). WinMain is **not crashed or deleted** — it
+comes up, runs its init (flash op now completing), and **blocks waiting for an event the lab
+never delivers**. This re-confirms the earlier "event-wait at idle" diagnosis (commit 6a64856):
+the remaining wall is a scheduler/event-delivery gap, not a missing device.
+
+**Concrete next step:** identify which event flag + bit-pattern WinMain's WAI is waiting on
+(from TCB 0x6068b580's wait object 0x6018f1c4, or by locating WinMain's `wai_flg`/`twai_flg`
+call in disasm near 0x5089a153), then determine whether the lab can signal it (like it signals
+VSC vsync via `display.mjs add_source`) — e.g. a display-ready / inter-task-ready flag that a
+real GUI partner task would set. Once WinMain stays runnable past the wait, `settle('GUI bring-up')`
+can complete and expose the menu-table reads for the original table-discovery goal.
+
+**Instrumentation caveat (reconfirmed):** hooking the task-lifecycle syscalls (ext_tsk 0x500107E8,
+ter_tsk 0x50015E87) also perturbs the HLE idle short-circuit — it then *replays* the same
+`ext_tsk` call (constant curTCB 0x6068aef0 = tid129 entry 0x5003400f, caller 0x500309c6, d0=0x81)
+and spins to the 200000-stub-call fault, even when the hook is removed after 8 fires. That spin is
+an **artifact**; tid129's ext_tsk is NOT WinMain (different TCB) and not the real wall. Use the
+direct-TCB-read-at-idle method (`idledump.mjs`) for task-state ground truth.
+
+Probes added this session: `scratchpad/{pollmask,bringclean,prints2,fwprints,catchexit,firstexit,idledump}.mjs`.
+
 ## State
 
 - Committed checkpoints: om-emu `c58aad0` (9 tasks + 4 HW stand-ins); docs `14580b7`,
