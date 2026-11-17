@@ -761,3 +761,23 @@ at construction) so it lands above the firmware's range; (b) reserve a settle_se
 won't reclaim; or (c) model/understand the display-open sem-reinit so it leaves lab objects alone.
 Plus: add the 5 power-cluster entries to E113 `extra_tasks`, then reconcile `started[]` with
 `menu.mjs:524`'s `wantStarted`. Probes: `scratchpad/{allow2,semfate,semrecreate}.mjs`.
+
+#### Sharpening the settle_sem diagnosis (A/B + mechanism)
+
+- **E143**: `settle_sem` = id **146**, created at construction, **survives** bring_up → SETTLES.
+- **E113**: `settle_sem` = id **112**, created at construction, **deleted** during the display-open
+  step → `isig_sem` E_NOEXS.
+- The ids differ because **fewer firmware semaphores exist at lab-construction time on E113**, so
+  the lab's construction-time `acre_sem` (menu.mjs:290) is handed id **112** — which falls *inside*
+  the range E113's display-open semaphore init later populates/clears. On E143 the lab gets id 146,
+  above the firmware's range, so it is never touched.
+- **No `del_sem` API call** deletes 112 (hooking SVC del_sem A(0x50010279) across the whole
+  bring-up catches nothing). So the pool is reinitialized by a **direct memory write** (the firmware
+  zeroing/re-creating its sem control blocks during display-open), or the lab created settle_sem
+  *before* the firmware's own kernel sem-table init, which then clobbered the premature id.
+
+**Concrete fix for next session:** the lab's settle_sem must be given an id outside the firmware's
+range on E113 — e.g. allocate it *after* the firmware's sem subsystem stabilizes (not at
+construction), or reserve a high id. The constraint is that the display-open settle itself needs
+settle_sem, so "after display-open" is too late; the target is the window between the firmware's
+sem-table init and the first settle. This is the precise, bounded next step.
