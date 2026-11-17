@@ -781,3 +781,46 @@ range on E113 — e.g. allocate it *after* the firmware's sem subsystem stabiliz
 construction), or reserve a high id. The constraint is that the display-open settle itself needs
 settle_sem, so "after display-open" is too late; the target is the window between the firmware's
 sem-table init and the first settle. This is the precise, bounded next step.
+
+#### DEFINITIVE: the firmware reinitializes the whole kernel semaphore pool during display-open
+
+Deeper probing (scratchpad semwhen/semstate/semfate2) nails the mechanism, and rules out the
+"give settle_sem an id above the firmware range" fix:
+
+- Deferring settle_sem creation to the first settle (lazy, E113-gated) moves its id from 112 to
+  **115** — but `isig_sem` still returns E_NOEXS. So id placement alone does **not** help.
+- The first settle happens *inside* the `DISPLAY cmd 2 OPEN tft` step. Sequence inside `settle()`:
+  (1) `make_settle_sem` → acre_sem → id 115 (sem exists); (2) `twai_sem(115)` blocks the lab task,
+  firmware runs the display-open work; (3) firmware **reinitializes the kernel semaphore pool**
+  while the lab task is blocked; (4) idle reached → onIdle → `isig_sem(115)` → **E_NOEXS**.
+- Proof of a pool reinit (not a targeted delete): a fresh `acre_sem` *after* the failure returns
+  id **112** — i.e. the dynamic allocator's high-water has been reset back down to 112. Static sems
+  1..~111 survive; everything from 112 up (including the lab's 115) is wiped. No `del_sem` API call
+  fires (SVC del_sem hook catches nothing) → it is a direct pool/table reinit in the firmware's
+  display-open init path.
+- At the failure point there are also 5 firmware tasks in timed waits (`timed_waiters
+  [46,10,74,1,57]`), tolerated under time_mode — not the blocker; the dead settle_sem is.
+
+**Interpretation:** E113's display-open drives the firmware's own kernel/OS semaphore-table init
+(cre_sem of the static sems 1..~111 and a reset of the dynamic allocator). The lab created its
+settle_sem in the volatile region above that, and the firmware's init wipes it. E143 survives
+(id 146) because its display-open does not run this pool reinit.
+
+**Why id placement can't win:** the reinit resets the allocator and clears the dynamic region
+*while the lab task is parked on twai_sem inside the same step*; any lab sem id in the dynamic
+range dies regardless of when it was allocated.
+
+**Next-session fix is architectural, not a fact-file knob.** Candidate directions:
+1. Make the display-open settle not depend on a firmware kernel semaphore — wake the blocked lab
+   task through a mechanism the firmware's pool reinit can't touch (e.g. drive the lab task's own
+   scheduler state / a dedicated lab-owned wake path), E113-gated.
+2. Run the firmware's sem-pool reinit to completion *before* the lab's settle needs a sem — i.e.
+   split the display-open step so the firmware finishes its kernel sem-init (pool reset) first,
+   then the lab allocates settle_sem and settles. Requires finding the exact reinit call in the
+   display-open path (trace which firmware routine resets the allocator to 112).
+3. In time_mode, since 5 tasks are in timed waits here, consider letting bring-up *elapse* at this
+   point (fire the timeouts, let the firmware complete display-open) rather than isig-settling,
+   then settle with a fresh sem afterward.
+
+Direction 2 needs a firmware trace (which display-open routine reinits the pool); directions 1/3
+are lab-architecture changes. All three are multi-step and belong to the next session.
