@@ -470,6 +470,73 @@ Verified green with the stand-in: E143 golden **95/95**, facts **273/273**, pure
 is E113-gated, so the golden model is untouched). Committed in `om-emu-src` (branch `e113-port`). Probe:
 `scratchpad/wf_check.mjs` lands cleanly at the `0x50031c0c` task wall.
 
+## Update 2026-11-17 (g) — Wall H ground natively: 9-task start-up chain to kernel idle
+
+Per the user's "grind chain natively" decision, the Wall-H task chain was walked with an automated
+grind driver (`scratchpad/wf_grind.mjs`): it catches each *"start firmware task entry 0x…"* throw,
+appends the entry to `MODEL_INFO.extra_tasks`, and retries a fresh `NavSession.enter()`, so each
+allowed task runs to its block and exposes the next. Nine tasks start before the chain leaves the
+task-startup phase, in order:
+
+| # | entry | what it does (where it walled) |
+|---|-------|--------------------------------|
+| 1 | `0x50031c0c` | CPU-connection init (`CPUCONN0`), zeroes `0x8ff0018c` |
+| 2 | `0x50032ed8` | — |
+| 3 | `0x50038e2f` | 3-channel peripheral enable (`0x98000000`), `0x99700000` register-block zero-init, SCPU port word `0x98e000a0` |
+| 4 | `0x50053c58` | device-register write at `0x98c00000` (+0x100), then busy-bit poll on `0x98C00004` |
+| 5 | `0x5003400f` | — |
+| 6 | `0x5005cb01` | — |
+| 7 | `0x500529db` | — |
+| 8 | `0x500441ea` | — |
+| 9 | `0x50043fd5` | — |
+
+**Four HW stand-ins** were needed along the chain (all `E118`-family `board.mjs`, so E113 + E120/E122
+share; facts stay green):
+
+- `stub_pages += 0x98000000` — 3-channel peripheral-enable register block (task 3, fn `0x500496e9`).
+- `stub_pages += 0x99700000` — register block zero-init (task 3, fn `0x5004bd82`).
+- `stub_pages += 0x98c00000` — device register write (task 4, fn near `0x50046ced`).
+- `stub_presets += [0x98C00004, 0]` — **busy-bit**. Task 4's poll at disasm `0x50047259` spins while
+  bit0 of `0x98C00004` is set; the firmware writes it to 1 and HW is meant to clear it. The plain stub
+  kept the written 1, so the poll read `0x1` **14,241,676×** → fault 7 (confirmed by `scratchpad/trace_98c.mjs`,
+  not static guess). The preset returns 0 always, so "busy" reads "done". This was the single change
+  that unblocked tasks 5–9.
+- Plus the E113-only `scpu.storage += [0xa0,0xa0]` (models.mjs) for the SCPU `0x98e000a0` port word
+  that E118's compacted SCPU map omits (RMW `or d1` at disasm `0x5004a40c` → fault 2).
+
+**Where it ends — a milestone, not another HW stub.** With all nine allowed, the kernel runs them to a
+block and drops into its **own idle loop `0x500162eb`** (`bra .`, @~199 s). Reached from the scheduler
+at disasm `0x50011b9a`: it reads `perCPU[cpu].field[360]` (ready count, per-CPU TCB table `0x8FF00004`)
+and, when `!= 1` (no task ready to run), calls `0x500162eb` to idle. So **every start-up task has
+initialised and blocked waiting for an event/IRQ** — the system reached steady idle. This idle is
+**distinct** from the lab's own injected idle (`kernel.mjs IDLE = 0x500159F3/F8`); the lab replaces the
+firmware's idle with a lab task and does **not** drive `0x500162eb`, so bring-up spins there (fault 7).
+
+This is exactly the *"some tasks need real models, not stubs"* boundary the grind-native plan predicted.
+**Precise diagnosis** (probe `scratchpad/idle_probe.mjs`, hook at `0x500162eb`): at the idle, `cpu=0`,
+`perCPU[0]` (`*(0x8FF00004)`) `= 0x7d9b0930`, its `field[360]` (the cpu's local ready-count the
+scheduler tests at disasm `0x50011ba6`) `= 0` — **but** the lab/nav task (tid 145) is `RDY` and the
+**global** ready-queue head `kcb[72] = 0x60688824` is populated. Tasks 1/9/10/44/45/46/138/139 are
+`WAI` (the eight start-up tasks that initialised and blocked on events); everything else is `DMT`
+(dormant). So a globally-ready task exists, yet cpu0's **local** ready-count is 0, so the per-CPU
+scheduler idles. The missing link is the **inter-CPU dispatch (IPI)** that would move a globally-ready
+task into cpu0's local run — and that IPI is exactly what the Walls F/G stand-in **skips** (one CPU in
+the lab). So the native multi-core scheduler cannot hand the RDY task to cpu0.
+
+**Strategic note.** The E143 lab reaches a *usable menu* by **modelling** the menu-path tasks
+(`cpu2.mjs`, `camapp.mjs`, `take.mjs`) and driving them with its settle/`idle_steps`/IRQ machinery at
+its own idle (`IDLE_DONE`) — it never runs the firmware's multi-core scheduler native to this point.
+The native grind cleared the real HW init walls (which any path needs) but has now reached the one
+piece the working architecture deliberately abstracts. Two ways forward, a genuine scope fork:
+**(a)** model the per-CPU scheduler so cpu0 picks up globally-ready tasks at `0x500162eb` (continues
+native, but means reimplementing the multi-core run-queue hand-off the IPI stand-in skips); **(b)**
+switch to E143-style **task modelling** for the menu-path tasks (the proven path to a usable menu,
+larger but principled). The HW stand-ins committed here are needed either way.
+
+Boot advanced ~23.8 s / 1 task-start → ~199 s / 9 tasks → kernel idle. Verified fast-green with the
+stand-ins (facts **273/273**, pure **255/255**); golden re-run pending. The nine tasks are persisted in
+E113 `extra_tasks` (models.mjs). No test was faked.
+
 ## Honest bottom line
 
 The "menu fully usable" goal is **not met**, but two of the three walls are down. Wall A
