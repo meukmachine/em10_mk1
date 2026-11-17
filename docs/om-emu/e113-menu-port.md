@@ -515,3 +515,61 @@ setter — the earlier "flash done-poll" and "WinMain WAI" framings were both wr
   unaffected (the E118-family change can't touch E143; E143 is a different board entry).
 - `check_menu` (E113) still fails offline at `menudata.groups()` — unchanged; the live-drive path
   to discover menu tables is blocked behind this kernel idle wall.
+
+---
+
+## FINDING 2026-11-17f — idle-block fix shape FOUND + verified; next wall = IRQ level ordering
+
+Correcting 2026-11-17e's framing: the lab's IDLE hooks (`kernel.mjs:88`,
+`IDLE = [A(0x500159F3), A(0x500159F8)]` → E113 runtime 0x7d9a730b / 0x7d9a7310) are
+**temporary** — installed only around `hle.call(KENTRY)` (kernel init) and restored away
+after (`saved = new Map(hle.hooks)` at :81). During kernel init they catch the firmware's
+idle-dispatch entry and throw `Idle` (clean exit). On E113 field[360]=0 at that moment, so
+kernel init actually reaches the **panic** arm 0x7d9a730b — and the temporary IDLE hook there
+*masks the panic as idle*. Kernel init "succeeds" via that masking. Fragile but functional.
+
+The wall is in the **later device bring-up** run (`MenuLab.bring_up`), where those temporary
+hooks are gone. Bring-up re-reaches the idle gate (fn 0x7d9a2b65): field[360]=0 → panic
+0x7d9a730b → ground (no hook now).
+
+### The fix shape (verified to clear the wall)
+
+E143's idle architecture (`kernel.mjs` :109 `intc.set_gate(GATE_PC, IDLE_DONE)`, :98 kcb idle
+TCB, :245 `hook_rt(IDLE_DONE, _idle)`) routes the idle point to the harness trampoline
+**IDLE_DONE = A(0xA2300080) = runtime 0x8a300080**. E113 does **not** reach IDLE_DONE that way:
+it idles through a **per-CPU control-block indirection** E143 lacks — `0x7d9a7310` does
+`mov (308,a0),a0; calls (a0)`, i.e. jumps through block field[308] (the idle-dispatcher ptr).
+
+Presetting the CPU0 block (`*0x8ff00004` = 0x7d9b0930) **before** bring_up:
+- field[360] (0x168, idle-ready) = 1  → gate takes the idle arm (call 0x7d9a7310), not panic
+- field[308] (0x134, idle-dispatcher ptr) = IDLE_DONE (0x8a300080)  → the `calls (a0)` lands on
+  the lab's IDLE_DONE trampoline → `_idle` hook fires
+
+…gets the firmware **cleanly to the idle point** (verified: `scratchpad/preset2.mjs`). Without
+field[308] (only field[360]=1) it grounds at 0x7d9a7323, the `bra .` after `calls (sled)`,
+because the static image value of field[308] is 0x7d9edcc9 — a `retf` sled, never overwritten in
+the lab. So **both** fields must be set.
+
+This is the real E113 kernel-port step: a model-gated per-CPU-block init (field[360]=1,
+field[308]=IDLE_DONE) that bridges E113's idle-dispatch indirection to the lab's IDLE_DONE home.
+Candidate home for the fix: `kernel.mjs` after `hle.call(KENTRY)`, gated on E113 (E143 unaffected
+— it has no such block / reaches IDLE_DONE via the INTC gate).
+
+### Next wall (deeper, independent — IRQ model data)
+
+With the block preset, bring_up now reaches the idle point and throws:
+
+```
+two interrupt levels presented together at the idle point: {3: 31, 5: 30}
+(A-INTC-ORDER and the level priority would decide)
+```
+
+(`kernel.mjs:287`, `strict_levels=true`.) Two IRQs present simultaneously — level 3 IRQ 31 and
+level 5 IRQ 30 — and the lab has no E113 **A-INTC-ORDER** (interrupt-controller priority order)
+to decide which fires first. This is INTC model data, a separate E113 port gap from the idle
+block. Next: find/port E113's INTC level-priority order (vs E143's) into the IRQ model.
+
+### Artifacts
+
+Probes `scratchpad/{clean,preset,preset2,hookmap,idlehooks,amap}.mjs`. No lab source changed yet
+(all findings via pre-bring_up memory presets, non-destructive). E143 golden untouched.
