@@ -243,34 +243,53 @@ them statically, which is exhausted). Progress this session:
   shows the cause: the firmware issues **SCPU command `0x20041001`** (sub-CPU / coprocessor
   request) and waits for a reply, plus an **OSD-engine guard** trip, neither completed by
   the E113 device model.
-- **Root cause is a port gap, not deep modelling**: the lab's SCPU-completion hooks are
-  unmapped for E113. In `PORTS.E113`, all of `SCPU_REQUEST 0x5005CD17`, the four reply
-  handlers (`0x5005A7F9/0x5005A85F/0x5012C87D/0x5012C8D3`), and both reply readers
-  (`0x5005A86C/0x5012C8E0`) are **NULL** — only the DRAM gate words (`0x6004315A…` →
-  `0x7dc3665x`) are mapped. With the reply hooks null, the lab never completes SCPU
-  command `0x20041001`, so `GUI_CREATOR` waits forever and grounds.
+### CORRECTION 2026-11-17 — "SCPU port gap" root-cause DISPROVEN
 
-### Concrete next target (bounded, code-address RE)
-Port E113's SCPU driver functions so the lab completes SCPU replies: find E113's
-counterparts of `SCPU_REQUEST`, the 4 reply handlers, the 2 reply readers, and
-`EMPTY_TASK`. These are real functions the firmware's task-creation/SCPU path references
-(unlike the menu *data*, which has no absolute code xref), so they are locatable by
-disassembling E113's SCPU/sub-CPU-link driver (memory: PER_SIO/SCPU link region ~0x7d9e,
-sub-CPU reply buffers in `0xA32Cxxxx/0xA32Dxxxx`).
+The prior "root cause = SCPU port gap" was wrong. Verified by disassembly + live probe:
 
-**Live anchor for next session**: the bring-up fault showed the SCPU command issued at
-runtime PC `0x7d9db4ba` = **disasm `0x5004a49a`**. The function there (starts ~disasm
-`0x5004a400`) is E113's SCPU transfer primitive — it drives the SCPU register block at
-MMIO `0x98e00000/0x98e00088/0x98e0008c` (`SCPU = 0x98E00000`), with `0x20041001` passed
-in by the caller (not an immediate). Start the SCPU-driver port from this function: walk
-its callers to find `SCPU_REQUEST`'s E113 counterpart, and its reply path to the reply
-handlers/readers. Second issue PC `0x7d996653` = disasm `0x50005633`; a third is in SRAM
-`0x4700164d` (the `0x47000000` copy-primitive region, outside blk00).
+1. **SCPU command `0x20041001` is NOT the blocker.** At disasm `0x5004a49a` the firmware
+   writes the command word to port `0x98e00064` then polls `mov (a1),d0; cmp 0,d0; lne`
+   (spin while non-zero). The lab's SCPU device (`src/dev/scpu.mjs`) returns **0** on a
+   COMMAND read (`if (off === COMMAND) return 0`, label A-SCPU-1), so the poll reads 0 and
+   **exits immediately**. The bring-up log shows the command fired **4× at four different
+   PCs** (`0x7d9db4ba`, `0x7d996653`, `0x4700164d` ×2) — proof the firmware advanced past
+   each poll. The E143 `SCPU_REQUEST`/reply-handler/reply-reader ports are the lab's
+   *backup-words* path, gated by `SCPU_BACKUP = fact('scpu.backup', hasString(img,
+   'ScpuBkupW'))`; E113 lacks that string, so that whole block (`menu.mjs:724`) is
+   correctly **skipped** (no `refuseUnmapped` throw — which is why those nulls never fire).
+   The SCPU-init MMIO is already backed by the E113 board fact
+   `scpu: { storage: [[0x00,0x94],[0xa0,0xa0]] }`.
 
-Once SCPU replies complete, re-run the
-`bringup.mjs` probe: `GUI_CREATOR` should create the GUI task, the bring-up should advance
-past idle, and the GUI task's menu-table reads become hookable — closing the loop to the
-menu table addresses.
+2. **The OSD-engine GUARD error is NOT the blocker either.** `cmdFill` rejects a fill whose
+   `dst` isn't inside a registered guard window (`engine.mjs:110`, `fail(E.GUARD, dst,
+   stride)`), but on the START register (`0x24`) the engine **still** completes the list and
+   sets `regs[1] |= 1` (STATUS done) → `updateLine()` fires `IRQ_OSD_ENGINE`
+   (`engine.mjs:342-351`). A GUARD-failed command is a *recorded* error (pixels skipped),
+   not a stall. The firmware sees "done" and proceeds.
+
+3. **The true wall = scheduler idle / event-wait.** Bring-up grounds at the firmware's own
+   idle `0x7d9a730b` (fault 7, nothing READY). `GUI_CREATOR` is called synchronously by the
+   lab (`menu.mjs:510`) and **blocks inside** — it has not returned and has **not created
+   the GUI task** (`0x5089a153` is absent from the task list). At idle, 8 tasks are `WAI`,
+   all low kernel/SCPU/timer bodies (entries `0x5004a30c` tid1, `0x5005c96a` tid9,
+   `0x5005c755` tid10, `0x5006b0db` tid44, `0x5006c358` tid45, `0x50075341` tid46,
+   `0x5004b5d8` tid138, `0x5005156f` tid139), parked on event-flag wait queues (doubly
+   linked: tid9↔tid10 on `0x60694b8c`; tid45↔tid46 on `0x60695a8c`; TCB `+120/+124` =
+   queue links, `+80` = priority). `GUI_CREATOR` is parked on one of these waits; it needs
+   an **interrupt the lab does not present** (vsync / frame / SCPU event line) to set the
+   event flag it waits on.
+
+### Concrete next target (bounded)
+Find exactly which event flag `GUI_CREATOR` waits on, then present the matching interrupt.
+Hook E113's event-flag-wait syscall (E143 `OlyEvWt 0x5002bdd8` → E113 counterpart) for the
+duration of the `GUI_CREATOR` call and capture the flag id + wait pattern at the point it
+blocks. That names the interrupt source the lab must raise. This is the "needs scheduler/
+task modelling" cost the dynamic path was flagged with — an interrupt/event-injection
+effort, not a static-address port. Once `GUI_CREATOR` returns and creates the GUI task, the
+bring-up advances and the GUI task's menu-table reads become hookable.
+
+Probe: `scratchpad/wai_probe.mjs` (dumps WAI TCBs at idle), `scratchpad/bringup.mjs`,
+`scratchpad/idle_probe.mjs`.
 
 Probes this session: `scratchpad/{idle_probe,labprobe,bringup,portchk,scpuchk,xref,mtask}.mjs`.
 
