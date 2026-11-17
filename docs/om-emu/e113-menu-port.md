@@ -848,3 +848,61 @@ idle-block fix installs (artifact). The NativeKernel's sim is the place to add t
 Note: the lab's NativeKernel exposes tcb(tid)/state(tid) but no clean force-ready (scheduler
 ready-queue insertion is firmware code), so "just poke the TCB ready" is not viable without
 modelling the ready-queue — another reason to resolve the genuine-vs-artifact fork first.
+
+---
+
+## Settle wall RESOLVED (2026-11-17): slp_tsk/iwup_tsk park + TCB re-register
+
+**The fork is answered: GENUINE.** The sem-pool reinit during display-open is real E113
+firmware. The restore is reached entirely through kernel task-dispatch frames
+(0x50011xxx/0x50012xxx) with no idle-trampoline (0x8a3xxxxx) frame on the stack, so the
+idle-block fix only *enabled reaching* display-open; it is not in the restore's call path.
+
+**What the restore actually does (wider than first thought):** it is a GENERIC kernel
+object-pool restore that re-registers only the firmware's *static* objects. It de-registers
+every dynamically-created object — not just the lab's settle semaphore but the lab's
+dynamically `acre_tsk`'d **task** as well. Measured: during `bring_up('tft', time:true)` the
+lab task (tid 0x91, TCB at 0x6068b508) has its registration field **TCB+16 zeroed** by the
+restore (at rest TCB+16 == tid). A sem-based park cannot survive this (the sem CB *and* its
+wait queue are gone), and re-creating the sem won't relink the orphaned waiter.
+
+**The fix (E113-gated, models.mjs `settle_slp`/`settle_iwup`):** park the lab task on
+`slp_tsk` instead of a semaphore, and wake it with the interrupt-callable `iwup_tsk`.
+
+- `slp_tsk` = runtime 0x7d9a6a16 (disasm 0x500159f6): no id arg; checks the running task-node's
+  wake-up count at node+21, else `knl_sleep_enter(kind=1)`; returns the wake code at node+64.
+  Requires task context (node+28 ctx byte == 0).
+- `iwup_tsk` = runtime 0x7d9a24d4 (disasm 0x500114b4): `knl_iwup_tsk`, interrupt-context wake of
+  a slp_tsk sleeper, deferred dispatch. Validates the target: id domain vs KCB+380, then
+  `TCB[id-1]` with **TCB+16 != 0** required — else **E_NOEXS (-42)**.
+
+**Why slp beats sem here:** the slp_tsk sleep is *queue-less* — the wait state lives entirely in
+the parked TCB (state bits + wake-up count), which the restore leaves intact. Only the
+registration field (TCB+16) is cleared. So the recovery is just: on iwup_tsk → E_NOEXS, write
+`TCB+16 = tid` (re-assert registration) and retry iwup_tsk. No object to re-create, no wait
+queue to rebuild. Implemented in kernel.mjs `_settle_wake` (slp branch).
+
+**Dead end (recorded):** `rel_wai` (knl_rel_wai 0x7d9a58d8 / disasm 0x500148b8) was tried first
+to release the orphaned sem-waiter. It fails with **E_CTX (-25)**: rel_wai needs task context but
+settle's onIdle wake runs in ISR context (`in_interrupt`). rel_wai is not ISR-callable; from task
+context it dispatches immediately, incompatible with the onIdle deferred-dispatch run loop. The
+`settle_rel_wai` knob was removed and replaced by `settle_slp`/`settle_iwup`.
+
+**Verified:** `bring_up('tft', time:true)` now passes the settle wall. E143 golden stays green
+(check_kernel all groups, check_menu all groups) — the mechanism is E113-conditional
+(`MODEL_INFO.settle_slp` unset on E143, which keeps the acre_sem/isig_sem park).
+
+### Next walls (post-settle, in order reached)
+
+1. **Firmware worker task 0x500f95cc** (runtime 0x7da8a5ec) is `act_tsk`'d during display-open.
+   Body = phase state machine over global 0x606b7f94 (0→1→2→3), parking on OlyQe event-flag
+   0x7d9b0510 (twai 0x7d9c1138, pattern 3). Added to E113 `extra_tasks` so it starts natively.
+2. **Lens-SSC device MMIO** (CURRENT wall): once the worker runs, it reaches lens-command code
+   (bank 0x7dac, dispatch 0x50130235 / runtime 0x7dac1255) that issues lens API command
+   **0x20041001** ("is lens 0's record present", facts.mjs ~2004) by writing it to a hardware
+   command register: at runtime 0x7d9dbbf7 `mov d0,(a1)` with d0 = 0x20041001, a1 = an unmapped
+   MMIO register (near 0x98e00068, the 0x98e00000 peripheral block). The lab faults (fault=2) on
+   the unmapped register. Open question mirroring task #1's: on E143 this path either models the
+   register or the worker parks before reaching it — needs the per-task stack/trace at the fault
+   to confirm which task is executing the lens command, then decide model-the-register vs
+   keep-the-worker-parked. Instrument the fault with a task/stack dump next.
