@@ -100,10 +100,54 @@ SETUP-tab dispatch, or a known menu string / resource-id path), then teaching
 `menudata.mjs` E113's layout (model-parametric, or an E113 decoder). The boot-wall
 work remains valid and needed, but it is not what gates the menu.
 
+## Breakthrough (2026-11-17, cont.) — tables located; earlier "differs structurally" was an overstatement
+
+Switched from signature matching to the reliable anchor: **the code that reads the
+tables**. Disassembled all of E113 (`scratchpad/e113_full.asm`, 11.4M lines) and
+collected every code immediate pointing into the menu-data cluster, then cross-checked
+each against the exact E143 table signatures. Results:
+
+- **E113's menu code region is `0x5095xxxx`** (the counterpart of E143's unported
+  `0x511bxxxx`), reading a data cluster spanning **`0x7e5b0000`–`0x7e5d0000`**. Menu
+  entry points (from the model config): `menu.task 0x5089a153`, `menu.take 0x5089a36a`,
+  `menu.caller` object at `0x60454240`.
+- **The descriptor format MATCHES E143**: 8-byte `{u16 type, u16 id, u32 lit}`. I had
+  mis-read it as 16-byte earlier; `0xe30004` is `{type=4, id=0xe3}`, `lit=NULL_DESC`.
+  So this is an **address + entry-layout** problem, not a parser rewrite. The earlier
+  "menu subsystem differs structurally (code AND data)" is corrected: the *code* is at a
+  different address and the *group-entry* layout differs, but the descriptor/table
+  grammar is E143's.
+
+Tables pinned (cross-validated by code-reference **and** structure):
+
+| table         | E113 addr    | evidence                                                   |
+|---------------|--------------|------------------------------------------------------------|
+| `NULL_DESC`   | 0x7e5c6308   | repeating `lit` sentinel, bytes `00 00 00 00 03 00 00 00`  |
+| `GROUP_LIST`  | 0x7e5c533c   | `{key=0, count=20, ptr=0x7e5c50f4}`; +8 adjacency to CV    |
+| `CUSTOM_VALUE`| 0x7e5c5344   | GL+8 (mirrors E143 0x6152D6B8/0x6152D6C0); modes 1,2,3,4…  |
+| `TAB_TABLE`   | 0x7e5cda48   | 8 tabs, ids 0–7, sane page counts (parses cleanly)         |
+
+E113 has **20 menu groups** (vs E143's 42), page_id range `0xf5..0x1a7`. The `+8`
+GROUP_LIST→CUSTOM_VALUE adjacency reproducing E143's exact layout is the strongest
+single confirmation.
+
+Still open (next session):
+- **Group-entry layout**: under E143's 16-byte `{page_id, desc, rec}` the 20 entries at
+  `0x7e5c50f4` give every `rec=0x7e5c50e4` (wrong) — E113's entry stride/fields differ.
+  Decode by disassembling the `0x5095xxxx` groups-reader that loads `0x7e5c533c`.
+- **ROW_ORDER, TAB_THEME, TAB_IDS**: not yet pinned. Candidates found (ROW_ORDER:
+  0x7e5b13c8/0x7e5b3788/0x7e5b4a60; many weak TAB_THEME hits) but none validated against
+  the real page_ids yet. TAB_IDS is `[0..7]` (trivially derivable even if the address
+  isn't pinned).
+- Then: resolve these in `PORTS.E113` and/or make `menudata.mjs` model-parametric
+  (E113's group-entry stride + 20-vs-42 groups).
+
 ## State
 
-- Committed checkpoint: om-emu `c58aad0` (9 tasks + 4 HW stand-ins), docs `14580b7`.
-- `check_menu` (E113) status: fails at offline `menudata.groups()` on the unresolved
-  `GROUP_LIST`. No test faked. E143 golden 95/95 unaffected.
-- Scratch probes: `scratchpad/port_menu.mjs`, `scan_group*.mjs`, `scan_blk2.mjs`,
-  `val_group.mjs` (signature/structural attempts above).
+- Committed checkpoints: om-emu `c58aad0` (9 tasks + 4 HW stand-ins); docs `14580b7`,
+  `f25c4e6`, + this.
+- `check_menu` (E113) status: still fails at offline `menudata.groups()` (addresses not
+  yet wired into PORTS.E113 / parser not yet model-parametric). No test faked. E143
+  golden 95/95 unaffected.
+- Scratch probes: `scratchpad/{scan_nulldesc,scan8,verify_group,climb,find_grouplist,
+  classify,tree}.mjs`, `e113_full.asm` (full E113 disassembly).
