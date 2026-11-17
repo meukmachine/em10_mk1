@@ -256,7 +256,18 @@ counterparts of `SCPU_REQUEST`, the 4 reply handlers, the 2 reply readers, and
 `EMPTY_TASK`. These are real functions the firmware's task-creation/SCPU path references
 (unlike the menu *data*, which has no absolute code xref), so they are locatable by
 disassembling E113's SCPU/sub-CPU-link driver (memory: PER_SIO/SCPU link region ~0x7d9e,
-sub-CPU reply buffers in `0xA32Cxxxx/0xA32Dxxxx`). Once SCPU replies complete, re-run the
+sub-CPU reply buffers in `0xA32Cxxxx/0xA32Dxxxx`).
+
+**Live anchor for next session**: the bring-up fault showed the SCPU command issued at
+runtime PC `0x7d9db4ba` = **disasm `0x5004a49a`**. The function there (starts ~disasm
+`0x5004a400`) is E113's SCPU transfer primitive — it drives the SCPU register block at
+MMIO `0x98e00000/0x98e00088/0x98e0008c` (`SCPU = 0x98E00000`), with `0x20041001` passed
+in by the caller (not an immediate). Start the SCPU-driver port from this function: walk
+its callers to find `SCPU_REQUEST`'s E113 counterpart, and its reply path to the reply
+handlers/readers. Second issue PC `0x7d996653` = disasm `0x50005633`; a third is in SRAM
+`0x4700164d` (the `0x47000000` copy-primitive region, outside blk00).
+
+Once SCPU replies complete, re-run the
 `bringup.mjs` probe: `GUI_CREATOR` should create the GUI task, the bring-up should advance
 past idle, and the GUI task's menu-table reads become hookable — closing the loop to the
 menu table addresses.
