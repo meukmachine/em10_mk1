@@ -437,3 +437,81 @@ Probes added this session: `scratchpad/{pollmask,bringclean,prints2,fwprints,cat
   golden 95/95 unaffected.
 - Scratch probes: `scratchpad/{scan_nulldesc,scan8,verify_group,climb,find_grouplist,
   classify,tree}.mjs`, `e113_full.asm` (full E113 disassembly).
+
+---
+
+## FINDING 2026-11-17e — the real post-flash wall: E113 per-CPU idle-dispatch block is uninitialized (scheduler/idle structure differs from E143)
+
+Chasing the firmware GUI bring-up (the "drive the emulator" path), the flash/DebugBlock/`!!`
+prints turned out to be **benign bring-up markers**, not the wall. Full event-stream capture
+(`scratchpad/alltail.mjs`, all kernel event types) shows that *after* those prints the firmware
+attaches **~52 device IRQs** (irq 24-27, 66-79, 114-119 = imaging/lens/sensor drivers) plus 42
+clock ops — i.e. bring-up gets far into real device init. It then grounds, and the ground is a
+genuine panic.
+
+**Ground = a deliberate panic-hang.** `bring_up('tft')` grounds at runtime `0x7d9a730b`
+(disasm `0x500162eb`), which is literally `bra 0x7d9a730b` — an infinite self-loop. Its single
+entry is `call 0x7d9a730b` from `0x7d9a2bd5`, the "not ready" arm of the kernel's idle-start gate:
+
+```
+; fn 0x7d9a2b65 (disasm 0x50011b45), "start scheduler / go idle",
+; called from 0x7d9a3a82 / 0x7d9a3b3a. Runs ~16 sub-inits, then:
+0x7d9a2bba  mov (0x8050),d0            ; CPU index (0 for CPU0)
+            asl2 d0
+            mov 0x8ff00004,a0          ; per-CPU control-block table base
+            mov (d0,a0),a0             ; a0 = this CPU's control block
+0x7d9a2bc6  mov (360,a0),d0            ; field[360] = idle-ready flag
+            cmp 1,d0
+            bne 0x7d9a2bd5             ; != 1  -> call 0x7d9a730b  (panic: bra .)
+            call 0x7d9a7310            ; == 1  -> enter idle dispatcher (never returns)
+```
+
+A sibling at `0x7d9a2db2` wires the dispatch pointer to the **panic address `0x7d9a730b`** as the
+explicit "not ready" fallback (vs `0x7d9a730d` idle), confirming this is a readiness gate.
+
+**Empirically confirmed (`scratchpad/gate360.mjs`, live hook_rt at the gate):** CPU0 control
+block = `0x7d9b0930` (an *image* address, not RAM), and **field[360] = 0x0** (needs 1) → panic.
+Neighbors: field[308] = `0x7d9edcc9`, field[260] = `0x6069a7f4`, field[104] = `0x60686fb0`,
+field[108] = 0x200. So the block is only **partially** initialized (260/104 are real RAM ptrs;
+360 and 308 are not).
+
+**Forcing it proves the structure mismatch (`scratchpad/redir.mjs`).** Hooking the panic entry
+`0x7d9a730b`, setting field[360]=1, and `finish_after`-ing into the normal idle path `0x7d9a7310`
+(which does `mov (308,a0),a0; calls (a0)` — call the idle dispatcher) does **not** reach the lab's
+hooked IDLE addresses (`kernel.mjs` `IDLE = [A(0x500159F3), A(0x500159F8)]`). It grounds again at
+`0x7d9a7323` (another `bra .`). Reason: **field[308] = `0x7d9edcc9` points into a `retf [],0`
+sled** (disasm `0x5005dca9`, a table of bare returns) — not a real idle dispatcher. Calling it
+returns immediately and the firmware hangs at the post-call `bra .`.
+
+### Conclusion (reframes the wall)
+
+The wall is **not** flash, DebugBlock, or WinMain self-deletion (WinMain deleting is a downstream
+symptom). It is that **E113's kernel scheduler/idle structure differs from E143's**, and the lab's
+`kernel.mjs` idle model is E143-shaped:
+
+- The per-CPU control block (CPU0 @ `0x7d9b0930`, via `*0x8ff00004`) is **not fully populated** in
+  the E113 lab: the idle-ready flag (field[360]) is 0 and the idle-dispatcher pointer (field[308])
+  points to a `retf` sled instead of real code.
+- The lab hooks E143's idle loop (`IDLE = [A(0x500159F3), A(0x500159F8)]`); forcing E113 down the
+  firmware's own idle path does not reach those addresses, so even past the gate there is no clean
+  settle.
+
+### Next step (next session)
+
+Find the kernel init that **populates the per-CPU control block** — specifically what should set
+field[360]=1 and field[308]=(real idle dispatcher) for CPU0 — and why the E113 lab skips or
+mis-maps it. Candidates: one of the ~16 sub-inits inside `0x7d9a2b65`; the multi-CPU barrier /
+IPI handshake stand-in (`XCPU_WAIT`, `kernel.mjs` xcpu_standin, E113 barrier `0x500125a3`); or a
+data-section init/copy the lab does not perform. Then decide whether the lab must (a) run that
+init, (b) populate the block directly as a stand-in, or (c) learn E113's true idle address and add
+it to the `IDLE` hook set. This is an **E113 kernel-port** task, deeper than a single missing
+setter — the earlier "flash done-poll" and "WinMain WAI" framings were both wrong.
+
+### Verified artifacts this session
+
+- Flash preset fix (`board.mjs`, om-emu 282f210) stands as a **real sub-fix**: it clears the
+  `[FLASH]intr status0 BIT` done-poll (that print is gone). It is just not the bring-up wall.
+- Probes: `scratchpad/{alltail,prints,winfate,gate360,force360,redir}.mjs`. E143 golden
+  unaffected (the E118-family change can't touch E143; E143 is a different board entry).
+- `check_menu` (E113) still fails offline at `menudata.groups()` — unchanged; the live-drive path
+  to discover menu tables is blocked behind this kernel idle wall.
