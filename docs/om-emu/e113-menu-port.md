@@ -661,3 +661,72 @@ time_mode still false). So the presets prove the *mechanism* but are the wrong *
    → firmware boots 18 tasks incl. WinMain (GUI task) and sits in normal timer waits.
 
 Probes: `scratchpad/enum.mjs` (+ clean/preset/preset2/preset3/hookmap/idlehooks/amap).
+
+---
+
+## FINDING 2026-11-17i — idle-block fix IMPLEMENTED + verified in the real path; next wall = TFT-open activates the QPWRSTANDBY power-task cluster
+
+Turned FINDING 17f's verified fix shape into real lab code (not a hand preset), and drove the
+**actual** `bring_up('tft', time:true)` path with it — confirming the fix clears the idle gate
+through the lab's own choreography, and surfacing the genuine next wall.
+
+### The fix (committed — om-emu `1e9177c`, branch e113-port)
+
+- **`src/fw/models.mjs`** — new E113-only fact, sibling to `xcpu_standin`:
+  ```js
+  idle_block: { table: 0x8ff00004, ready: 360, dispatch: 308 },
+  ```
+- **`src/lab/kernel.mjs`** `LabTask.boot()` (after `hle.hooks = saved; install_guards()`):
+  ```js
+  if (MODEL_INFO.idle_block) {
+    const ib = MODEL_INFO.idle_block, block = sim.u32(ib.table) >>> 0;
+    sim.word((block + ib.ready) >>> 0, 1);          // field[360] = idle-ready
+    sim.word((block + ib.dispatch) >>> 0, IDLE_DONE); // field[308] = idle-dispatcher -> lab home
+  }
+  ```
+  CPU0 block = `*(0x8ff00004)` = 0x7d9b0930; field[360]=1 takes the idle arm (not the panic
+  self-loop 0x7d9a730b), field[308]=IDLE_DONE lands the `calls (a0)` on the lab trampoline.
+
+### Verified
+
+- `OM_EMU_MODEL=E113` clean `bring_up('tft', time:true)` (NO hand presets) now clears the idle
+  gate AND the two-level IRQ point (boot_time sets strict_levels=false) — advancing to the
+  task-start guard. The blanket-preset desync of 17h is gone: the lab's own display.mjs sequence
+  does strict_levels/time_mode/boot_time at the right point.
+- E143 golden `check_kernel` still passes all groups (0.9 s). The fact is E113-only, so E143's
+  `if (MODEL_INFO.idle_block)` is skipped (E143 reaches IDLE_DONE via the INTC gate, no block).
+
+### Next wall — the QPWRSTANDBY power-task cluster (E113 TFT-open only)
+
+With the idle gate cleared, `bring_up('tft', time:true)` stops at:
+
+```
+kernel would start firmware task entry 0x500442dc (exinf 0x0): not modelled
+```
+
+- Entry 0x500442dc = runtime **0x7d9d52fc**; its name ptr (0x7da61104) reads **"QPWRSTANDBY"** —
+  a power-standby service task. Body: acquires an OlyQe resource (id 16, via 0x7d9c12bf), then
+  loops on 0x7d9c132d with d1=-1 (TMO_FEVR) — a mailbox/flag service task.
+- It is activated during the step **"DISPLAY cmd 2 OPEN tft (code 1)"** (the display-open
+  doorbell handler), caller chain through the kernel act_tsk SVC (0x7d9a2a59).
+- Allowing it does NOT settle: it cascades to 4 more tasks
+  (disasm 0x500f5b75, 0x5003ca91, 0x500f7722, 0x500387f7) then fails at
+  **`settle: isig_sem = -42`** — the lab's OWN `settle_sem` (kernel.mjs:350), i.e. the power
+  cluster corrupted the lab task choreography. So these tasks are NOT meant to run in the lab;
+  this is not a missing firmware sem.
+
+### The divergence (clean A/B)
+
+Same step on each model, `bring_up('tft', time:true)`:
+
+- **E143** (golden, SETTLES): "DISPLAY cmd 2 OPEN tft (mask 1)" starts **exactly one** task.
+- **E113**: "DISPLAY cmd 2 OPEN tft (code 1)" starts **QPWRSTANDBY** (+ cascade).
+
+So E113's display-open handler takes a path E143's does not — reaching an act_tsk of the
+power-standby task cluster during TFT-open. Resolving it means tracing the E113 display-open
+doorbell handler to find what gates the power-standby branch (a mode/flag precondition the
+partial lab boot leaves in the "do power init" state), OR teaching the lab to stand in for the
+power subsystem the way it already stands in for the sub-CPU (`xcpu_standin`). This is the next
+sub-investigation — a fresh RE job on the display-open path, not a one-line fact.
+
+Probes: `scratchpad/{clean2,clean3,tasks2,caller,step,e143step,allow1}.mjs`.
