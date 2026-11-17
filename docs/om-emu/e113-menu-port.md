@@ -957,3 +957,56 @@ loop is downstream/concurrent; fix the OSD engine first and re-measure. No board
 changed this session beyond the reverts — committed state keeps only the `stub_tasks` mechanism
 (kernel.mjs) + the E113 `stub_tasks`/`extra_tasks` edit (models.mjs). E143 golden stays green
 (check_kernel + check_menu all groups).
+
+### Session update (2026-11-17, cont.): the blocker is **tid1 alone**, and the guards are lab-seeded
+
+Measured engine totals after `bring_up('tft')` (probe reads the engine debug window 0x8E000000:
+EXEC_TOTAL +0x2C, ERR_TOTAL +0x08):
+
+| | engine EXEC | engine ERR | task-starts | nk.tasks RUN | outcome |
+|---|---|---|---|---|---|
+| **E143** | 0 | 0 | 7 | 0 (settled) | reaches DRAM GUI tasks 0x510c1d01 / 0x5115ba0c |
+| **E113** | 16 | 16 (100%) | 49 | **tid1 only** | faults at lens-unit write; tid1 never parks |
+
+**Task-start divergence.** E143 starts 7 tasks and settles. E113 starts 49; the block
+`0x5005148d 0x500f7722 0x500387f7 0x50031c0c 0x50032ed8 0x50038e2f 0x50053c58 0x5003400f
+0x5005cb01 0x500529db 0x500441ea 0x50043fd5 0x500442dc 0x500f5b75` repeats **3×** — almost
+certainly the 3-core SoC (CPU0/1/2) each booting ~16 tasks, not a retry loop. Of 145 TCBs after
+bring-up, **only tid1 is RUN** (tids 9/10/23 WAI, the rest DMT). So the non-settle reduces to one
+task: **tid1 = core-init 0x50031c0c** never reaches a park. Its init runs the OSD draws (all 16
+fail) and 23 lens queries, then faults at the lens-unit cleanup write 0x7dac1255. Fix tid1's init
+to complete/park and the lab settles.
+
+**The 16 OSD errors, decoded from the engine error ring (0x8E000100, 32 B/slot):**
+- `#0 DEPTH` pc 0x7e6a5655 (ROM), w0=0x20000310 → depth **3**. E113's engine is configured
+  `depth: 5`, so the single-depth check rejects it. The other 15 fills are w0=0x…0510 → depth **5**
+  (pass depth, fail guard). **E113 uses both depth 3 and depth 5**; the strict single-`DEPTH_OK`
+  can't admit both.
+- `#1..#15 GUARD`: a 5-fill cycle (dst/stride 0x804ee2dc/0x2000, 0x805602dc/0x1600,
+  0x809f1640/0x2000, 0x80a91640/0x1580, 0x80aa42c0/0x880) repeated 3×, all color-0 `cmdFill`s
+  (ENC2 bus addrs, bit31 set). No guard slot covers them.
+
+**Why GUARD: the guards are lab-seeded, not firmware-registered.** engine.mjs has no guard-write
+register path; `guarded()` reads debug-window slots that only `engine.set_guard(slot,base,stride,
+height)` fills. The lab seeds them from **`GUI_GUARDS` + `STRIDE` (constants in src/lab/osd.mjs)**
+at `menu.mjs:295` / `text.mjs:142`, and check_menu seeds from `lab.surfaces` (check_menu.mjs:234).
+These carry **E143 framebuffer geometry** (one STRIDE, E143 bases). E113's surfaces have *multiple*
+strides (0x2000/0x1600/0x1580/0x880) at different bases (~0x004e_xxxx cached), so none match →
+every E113 fill fails GUARD. board.mjs:361 even notes "the guards are the lab's" for this E118/E144
+engine form.
+
+**Consequence for the fix:** making E113 settle needs tid1's display/lens init to complete, which
+needs the OSD engine to *accept* E113's fills — i.e. **model-parametric guards + depth**:
+1. `GUI_GUARDS`/`STRIDE`/`surfaces` must become per-model (E113's real surface bases/strides/heights),
+   or the lab must seed E113 guards covering its actual fill rects.
+2. The engine DEPTH check must admit E113's depth-3 **and** depth-5 fills (a depth set, or a board
+   `depths: [3,5]` knob), not a single `DEPTH_OK`.
+Then re-measure: with fills accepted, does tid1's lens init conclude "no lens" and park, or does the
+SCPU 0x20041001 loop still spin? (The lens query is bounded per cycle — 3 units × call sites — so
+the outer repeat may be gated on the display coming up; fixing OSD first is the right order.)
+
+**Open RE task:** find E113's OSD surface geometry. The fill destinations observed
+(base ≤ dst, matching stride) bound each surface, but the authoritative source is the firmware's
+display-surface registration near the ROM engine-setup 0x7e6a5600 (writes engine base 0x9c100000
+regs 0x04/0x20/0x24/0x38/0x3c). That code sets surface config the lab can read to seed guards
+honestly rather than back-fitting observed blits.
