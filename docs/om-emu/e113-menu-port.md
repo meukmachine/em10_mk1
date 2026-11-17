@@ -573,3 +573,40 @@ block. Next: find/port E113's INTC level-priority order (vs E143's) into the IRQ
 
 Probes `scratchpad/{clean,preset,preset2,hookmap,idlehooks,amap}.mjs`. No lab source changed yet
 (all findings via pre-bring_up memory presets, non-destructive). E143 golden untouched.
+
+---
+
+## FINDING 2026-11-17g — two more walls peeled past the idle block (verified chain)
+
+Continuing from 2026-11-17f with the CPU0 block preset in place, two further walls fall in
+sequence (each verified by advancing to the next):
+
+**Wall 2 — IRQ two-level ordering (NOT a fundamental gap).** With the block preset, bring_up
+throws `two interrupt levels presented together at the idle point: {3: 31, 5: 30}`
+(`kernel.mjs:287`, `strict_levels=true`). But `display.mjs:888` sets `lt.strict_levels = false`
+on the normal display-bring-up path — the throw is reached only because the preset shortcut hits
+an idle point before that clears. Setting `lt.strict_levels = false` (as the real path does) lets
+it proceed (`scratchpad/preset3.mjs`). So this is a sequencing artifact of the preset probe, not
+a missing E113 INTC order — supersedes 2026-11-17f's "next wall = IRQ ordering" framing.
+
+**Wall 3 — firmware task-start guard (the task-modelling frontier).** Next throw:
+`kernel would start firmware task entry 0x500442dc (exinf 0x0): not modelled`
+(`kernel.mjs:262`). The guard allows a firmware task to start only if `hle.patch.code(entry)`
+models it; otherwise it refuses. Task entry disasm 0x500442dc = runtime **0x7d9d52fc** — a system
+task that reads global 0x7d9b068c (adjacent to the per-CPU block base 0x7d9b0930), calls OlyQe
+primitive 0x7d9c12bf, and logs via 0x7d997b14. It is created via `acre_tsk` with a computed
+entry (no static immediate xref), so naming it needs dynamic capture.
+
+This is the **"drive the emulator" multi-session work** the user flagged: each firmware task the
+GUI bring-up starts must be either allowed to run natively or given a lab stand-in/patch model.
+The next step is to understand how E143 gets past these task starts (are its tasks modelled via
+`hle.patch` entries, or run natively?) and port/author the E113 equivalents — ultimately so the
+GUI task runs and reads its own menu tables (the hook-the-reads plan).
+
+### Verified chain this session (all via non-destructive pre-bring_up presets, E143 untouched)
+
+1. Idle gate — FIX FOUND: CPU0 block field[360]=1 + field[308]=IDLE_DONE (0x8a300080).
+2. IRQ two-level at idle — artifact; `strict_levels=false` (normal display path) clears it.
+3. Task-start guard at entry 0x7d9d52fc — the task-modelling frontier; open.
+
+Probes: `scratchpad/{preset2,preset3}.mjs`.
