@@ -1,0 +1,109 @@
+# OM-Emu E113 — menu-data port: findings and scope (2026-11-17)
+
+After the boot walls A–H were ground native to the kernel idle (see
+`e113-boot-walls.md`), the session pivoted — on the user's "switch to task modelling"
+decision — to making the **menu usable**, measured by `checks/check_menu.mjs`. This
+documents what that path actually hits, so the next session does not re-walk it.
+
+## The menu test fails *before boot*, in the offline menu-data parser
+
+`check_menu.mjs` step 0 is **offline**: it builds `new M.Image(loadImage())` and calls
+`src/lab/menudata.mjs` `M.check(img)` / `groups(img)` / `tab_entry(img, SETUP_TAB)` —
+pure reads of static menu-structure tables in the firmware image, no emulation. For
+E113 it throws immediately:
+
+```
+ValueError: address 0xfe52d6b8 outside the image
+  at Image.off (src/lab/menudata.mjs:32)
+  at groups (src/lab/menudata.mjs:77)   // img.u16(GROUP_LIST)
+```
+
+`0xfe52d6b8` is `UNMAPPED(0x6152D6B8)` (`src/fw/model.mjs` `UNMAPPED` = `0xFE000000 |
+low24`). So `A(0x6152D6B8)` returned the sentinel: **`PORTS.E113[0x6152D6B8] === null`**
+— the address is in the port map but marked *unresolved*.
+
+So the boot walls were never the thing standing between E113 and a usable menu. The
+menu is **static data** that `menudata.mjs` reads, and that data is not ported.
+
+## The 7 unresolved menu-structure tables
+
+`menudata.mjs` hardcodes ~25 E143 run-time table addresses through `A()`. Seven are
+`null` (UNMAPPED) in `PORTS.E113` — these are what block the parse:
+
+| name          | E143 addr   | role                                   |
+|---------------|-------------|----------------------------------------|
+| `GROUP_LIST`  | 0x6152D6B8  | page-group master table                |
+| `CUSTOM_VALUE`| 0x6152D6C0  | custom value-handler table             |
+| `TAB_IDS`     | 0x61527174  | tab id list                            |
+| `TAB_TABLE`   | 0x6152722C  | tab → page table                       |
+| `NULL_DESC`   | 0x615273E4  | the "no literal" descriptor sentinel   |
+| `ROW_ORDER`   | 0x614DA31C  | row-order table                        |
+| `TAB_THEME`   | 0x613A0CA8  | per-tab theme table                    |
+
+(`PORTS.E113`: 2208 entries, 1125 null. Only 20 of the nulls are in the DRAM data
+region ≥0x60300000; the 7 above are the menu ones.)
+
+## Why `bin/port.mjs` left them null — E113's menu subsystem differs structurally
+
+The port tool resolves E143→E113 addresses by matching code/data between the two
+builds. It could not place the menu tables because **the surrounding menu code did not
+match**. Evidence:
+
+- `PORTS.E113` has essentially **no mappings for the E143 menu-function region**
+  `[0x511bc000, 0x511c0000]`: one key (`0x511bf0a6`, itself null).
+- Region coverage is very uneven (resolved/total per ~1 MB of E143 code): 0x50000000
+  58 %, but 0x50500000 21 %, 0x50600000 27 %, 0x50700000 12 %, 0x50800000 26 %. The
+  GUI/app/menu-heavy regions are the least ported. E113 (E-M10 **Mark I**, 2014, body
+  fw 1.4) is an older, structurally different firmware than the E143 golden.
+
+## Two blocks, and the data layout differs
+
+- E113 firmware is two blocks: `blk00000000` (18.9 MB, RT 0x7d991020) and
+  `blk01200000` (25.2 MB, RT 0x7eb91020). `loadImage()` returns only blk00. E143's
+  menu data sits ~22 MB into its *single* 33.5 MB blk00; E113's blk00 is smaller, so
+  some data spilled into block 2. (The menu tables that *are* reachable, like the
+  GROUP_LIST candidate below, are in blk00.)
+- E143 GROUP_LIST is `{u16 key, u16 count, u32 ptr}` records; `[0]` is the key=0
+  master with count=42 and page_ids in a consecutive run 0xCB..0xF4, each 16-byte
+  entry `{page_id, type=4, lit=NULL_DESC, rec=base+28·g}`. **E113 has none of this**: no
+  0xCB..0xF4 page-id run and no 28-stride record run in either block. The Mark I menu
+  uses different page ids and a different record layout.
+
+## Methods tried to locate E113's tables, and why each failed
+
+1. **Masked-immediate byte signature** (mask the 4 address bytes in the E143
+   instruction window, find the match in E113, read E113's immediate): false positives
+   — relative branches and other refs in the window differ between builds. Gave
+   `GROUP_LIST→0x7e5b13c8`, `CUSTOM_VALUE→0x7e5b5d90`, which are 18 KB apart though the
+   E143 originals are 8 bytes apart.
+2. **Structural scan** (find the 42-entry / 28-stride array): nothing in either block —
+   E113's layout differs (see above).
+3. **Code signature** (`asl 3,d0; mov d0,a0; add imm,a0; movhu (a0),d0; cmp d0,d3` —
+   the GROUP_LIST search loop): one hit, `0x5095c6f9 → 0x7e5b13c8`, *agreeing with
+   method 1*. But parsing 0x7e5b13c8 gives records whose entries have `type=0xDA07`
+   (not a 0–12 descriptor) — it is a **different** 8-byte-keyed search table; that
+   instruction pattern is common. False positive confirmed by PORTS: the E143 menu
+   function region does not map near 0x5095c6f9.
+
+Lesson: short byte/code signatures are not selective enough across these two builds,
+and the E143-format structural scan is invalid for E113. Locating E113's menu tables
+needs real disassembly of E113's own menu functions (bottom-up from a reliable anchor),
+not signature matching against E143.
+
+## Scope conclusion
+
+"Menu fully usable" for E113 is a **standalone RE sub-project**, not an address port:
+E113's menu subsystem (code *and* data tables) differs from the E143 golden and was not
+carried by `bin/port.mjs`. Reaching it means reverse-engineering E113's own menu-data
+format and tables — likely finding E113's menu functions from a dependable anchor (the
+SETUP-tab dispatch, or a known menu string / resource-id path), then teaching
+`menudata.mjs` E113's layout (model-parametric, or an E113 decoder). The boot-wall
+work remains valid and needed, but it is not what gates the menu.
+
+## State
+
+- Committed checkpoint: om-emu `c58aad0` (9 tasks + 4 HW stand-ins), docs `14580b7`.
+- `check_menu` (E113) status: fails at offline `menudata.groups()` on the unresolved
+  `GROUP_LIST`. No test faked. E143 golden 95/95 unaffected.
+- Scratch probes: `scratchpad/port_menu.mjs`, `scan_group*.mjs`, `scan_blk2.mjs`,
+  `val_group.mjs` (signature/structural attempts above).
