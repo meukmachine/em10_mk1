@@ -824,3 +824,27 @@ range dies regardless of when it was allocated.
 
 Direction 2 needs a firmware trace (which display-open routine reinits the pool); directions 1/3
 are lab-architecture changes. All three are multi-step and belong to the next session.
+
+#### PIVOTAL open question for next session (decides the fix family)
+
+Before building any settle workaround, answer: **is the kernel sem-pool reinit genuine E113
+display-open firmware behavior, or an artifact of the idle-block fix** (models.mjs `idle_block`,
+kernel.mjs boot) steering the firmware's idle dispatch into a kernel re-init path?
+
+- If **genuine**: the lab must survive it — fix is architectural on the lab side (wake the parked
+  lab task without a firmware sem: find firmware `rel_wai` and fall back to it in settle()'s onIdle
+  on isig_sem E_NOEXS; or restructure so the display-open settle runs after the reinit completes).
+- If **artifact**: the idle-block fix is sending the firmware somewhere wrong (re-running kernel
+  init) and needs refinement, not a settle patch.
+
+How to decide (next session): find the firmware routine that resets the sem allocator (acre_sem
+returns 112 after the reinit, so the allocator high-water is reset). acre_sem body at runtime
+0x7d9a0635 reaches the per-CPU KCB via global 0x8050 (cpu index) into table base ~0x8FEFFEC4,
+KCB+380 = max-sem count, then the sem control-block table. Watch that table for the mass write
+during `bring_up('tft', time:true)` and capture the writing PC; disassemble it and see whether it
+sits in the display-open call tree (genuine) or is reached from the idle-dispatch indirection the
+idle-block fix installs (artifact). The NativeKernel's sim is the place to add the write-watch.
+
+Note: the lab's NativeKernel exposes tcb(tid)/state(tid) but no clean force-ready (scheduler
+ready-queue insertion is firmware code), so "just poke the TCB ready" is not viable without
+modelling the ready-queue — another reason to resolve the genuine-vs-artifact fork first.
