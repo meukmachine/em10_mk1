@@ -190,6 +190,41 @@ component, tracking the base register(s) that address the menu data** — which 
 decompiler (the `ghidra-reverse-engineering` skill): reliable xrefs, call graph, and
 register dataflow instead of eyeballing disassembly.
 
+## Negative result: the 0x7e5cxxxx cluster is NOT confirmed to be menu data
+
+A script-driven xref (`scratchpad/xref.mjs`, all address math in-script) scanned the whole
+disassembly for any **real code line** (text area, runtime < 0x7e000000) loading an
+absolute pointer into the `[0x7e5c0000, 0x7e5d0000)` cluster. Result: **0 hits.** Nothing
+in the code directly loads a pointer into that cluster.
+
+Consequences, stated honestly:
+- The cluster was originally reached by collecting "code immediates into it" — but those
+  were all **data-disassembled-as-garbage** (objdump `-D` decodes the data region as
+  instructions). So the trail that led to 0x7e5cxxxx was a dead end.
+- Therefore the earlier **"SOLID"** grades on NULL_DESC / descriptor-pool / TAB_TABLE are
+  **overstated**. Those byte patterns *are* real descriptor-table-shaped data, but there
+  is **no evidence they are the menu's** — the firmware has many descriptor tables
+  (rec-param, devparam, imaging recipes), and any of them can show a NULL-literal sentinel
+  and runs of type-4 descriptors. Downgrade to: *descriptor-shaped data of unknown owner.*
+
+**All three static location methods are now exhausted** for E113's menu tables:
+absolute-immediate scan (nothing), E143-format structural scan (nothing), and code-xref
+into the candidate cluster (nothing). The menu tables are reached neither by absolute
+immediate nor — as far as any direct pointer load shows — from the text area at all,
+consistent with a data-section base held in a global/object and populated at init.
+
+### Realistic remaining approaches (all are larger sub-efforts)
+1. **Dynamic**: let the emulator execute the menu-init path so it populates the GUI-app
+   object's menu pointers, then read them from emulated RAM. Blocked today — the E113
+   model grounds at kernel idle (Wall H) before GUI init runs; would need the menu-init
+   task driven far enough.
+2. **Decompiler call-graph trace**: Ghidra-style xref/dataflow from GUI WinMain down to
+   the menu reader. Ghidra ships **no** MN10300/AM33 processor by default → needs a custom
+   SLEIGH spec (itself a sub-project), or another MN10300-aware decompiler.
+3. **Different static anchor**: find a *menu-specific* localized UI string (a settings
+   label unique to the menu) and trace what code consumes it — a string-driven anchor
+   instead of the GUI-task anchor, which turned out too high-level.
+
 ## State
 
 - Committed checkpoints: om-emu `c58aad0` (9 tasks + 4 HW stand-ins); docs `14580b7`,
