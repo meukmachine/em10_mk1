@@ -610,3 +610,54 @@ GUI task runs and reads its own menu tables (the hook-the-reads plan).
 3. Task-start guard at entry 0x7d9d52fc — the task-modelling frontier; open.
 
 Probes: `scratchpad/{preset2,preset3}.mjs`.
+
+---
+
+## FINDING 2026-11-17h — task chain reaches the GUI task; terrain fully mapped
+
+Allowing all task starts (overriding the `allow` set) with the block preset
+(`scratchpad/enum.mjs`) boots **18 firmware tasks** and reaches a time wall:
+
+```
+settle: task(s) [46, 10, 74, 1, 57] in a timed wait
+(0x5005cb01, 0x50043fd5, 0x500f5b75, 0x50031c0c, 0x500387f7): time model needed
+```
+
+The started entries (disasm) include **0x5089a153 — WinMain, the GUI App "Start Gui Task"**
+(per [[guiapp-core-7e33]] / memory), plus 0x50893f78 beside it. So the "drive the emulator" path
+**reaches the GUI task**: the firmware boots its full task set, which then sits in normal timer
+waits (tslp/dly), exactly what a live system does at idle.
+
+### Key clarification — the blanket preset desyncs from the display choreography
+
+`bring_up('tft')` is not just "reach idle"; `display.mjs` runs a sequence that itself sets
+`lt.strict_levels = false` (:888), `lt.time_mode = true` (:889) and `boot_time()` (:981), and
+`menu.mjs:524` expects a **curated** task set to start — `GUI_TASK`, `EMPTY_TASK`,
+`GENIFA_TIMER_TASK`, optionally `CHANGE_TASK` / `DEFER_TASK` / `PER_SCPU_TASK`. The pre-bring_up
+block preset makes the firmware idle **earlier** than that sequence expects (hence preset2 hit the
+two-level IRQ throw with strict_levels still true, and enum hit "time model needed" with
+time_mode still false). So the presets prove the *mechanism* but are the wrong *placement*.
+
+### The implementation plan (next session)
+
+1. Put the E113 per-CPU-block idle init (**field[360]=1, field[308]=IDLE_DONE**, CPU0 block
+   `*0x8ff00004`=0x7d9b0930) into the lab at the correct choreography point — in `kernel.mjs`
+   after `hle.call(KENTRY)` / before device bring-up, **model-gated to E113** so E143 (which
+   reaches IDLE_DONE via the INTC gate, no such block) is untouched.
+2. Let `bring_up('tft')`'s own `display.mjs` sequence then set strict_levels/time_mode/boot_time
+   as it does for E143 — don't preset those by hand.
+3. Reconcile the started-task set with `menu.mjs:524`'s curated `wantStarted`: identify which of
+   the 18 E113 tasks map to GUI_TASK / EMPTY_TASK / GENIFA_TIMER_TASK (E113 entry addresses) and
+   populate `MODEL_INFO.extra_tasks` / the task-id constants for E113.
+4. With the GUI task running under the time model, hook its menu-table reads to discover the E113
+   menu-table addresses — feeding the offline `menudata.mjs` port (the original check_menu failure).
+
+### Full verified wall chain this session
+
+1. Idle gate — FIX FOUND: block field[360]=1 + field[308]=IDLE_DONE.
+2. IRQ two-level at idle — `strict_levels=false` (display.mjs does this normally).
+3. Task-start guard — allow the firmware's tasks (curated set per menu.mjs:524).
+4. Timed-wait — `time_mode=true` + the lab clock (display.mjs does this normally).
+   → firmware boots 18 tasks incl. WinMain (GUI task) and sits in normal timer waits.
+
+Probes: `scratchpad/enum.mjs` (+ clean/preset/preset2/preset3/hookmap/idlehooks/amap).
