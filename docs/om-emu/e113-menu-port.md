@@ -312,12 +312,56 @@ the lab does not present** (vsync / SCPU-event / frame-timer). Note: hooking the
 garbage caller) — an instrumentation artifact; use the helper-wrap trace, not an address hook,
 to locate the step.
 
-**Next target (unchanged in spirit, sharper):** determine which interrupt source the E113
-GUI tasks block on during `settle('GUI bring-up')` and present it (the dynamic path's known
-interrupt/event-injection cost). Compare the lab's E143 GUI-bring-up interrupt delivery
-(vsync IRQ channels in `src/lab/display.mjs`, `VSYNC_FLAG_IDS`) against E113's — E113's
-vsync flag-id words / IRQ channels likely differ and aren't wired, so the lab's frame/vsync
-stand-in never fires for the E113 GUI tasks. Probe: `scratchpad/steptrace.mjs`.
+**Next target (superseded below by the 2026-11-17c finding — the block is a flash-controller
+poll, not a vsync/IRQ gap).** Vsync flag-id words were checked and DO map in E113 (non-null:
+0x6004305E→0x7d9b0572, 0x600430DE→0x7dc365dc, 0x60043178→0x7dc36676), so vsync delivery is
+not the blocker.
+
+### FINDING 2026-11-17c — the GUI task IS created; it aborts on an unmodeled flash-controller poll
+
+Decisive sequence (probes `scratchpad/{creatorout,idletasks2,prints,flashwrite}.mjs`):
+
+1. `GUI_CREATOR` (0x50892cd4) **does create the GUI task.** Captured right after its `call()`
+   returns (stubbing `settle` to a sentinel): `creator_out = [0x1, 0x0]`, and the task list
+   now has **tid146 entry 0x5089a153 (WinMain) state WAI** — total 146 tasks. (Corrects the
+   earlier "GUI_CREATOR blocks / never creates the task" claim — it returns and the task exists.)
+2. After `settle('GUI bring-up')` grounds at idle, the task list is back to **145 tasks with
+   NO task in the GUI region 0x5088–0x508a** (not even DMT). So during settle the GUI task
+   **ran and self-deleted** (146→145) — WinMain hit an abort path in its startup, it did not
+   enter its event loop.
+3. The firmware's own debug prints over bring-up (kernel `events` print log) end with a
+   repeated **`[FLASH]intr status0 BIT` / `[FLASH]read before writing`** loop (~35× of the
+   last 40 prints), then a `K.R. / 10/23 16:31 / !!` stamp (`!!` = abort marker). The `[FLASH]`
+   driver is at disasm **0x5000174b** (intr status) and **0x50003d39** (read before writing) —
+   E113's own low-level serial-flash / NAND driver, which programs the **flash controller at
+   0x98d0xxxx** (board.mjs:388-390: register page 0x98d00000; the lab does **not** model it).
+4. The lab's flash stand-ins are keyed to **E143** addresses that are **UNMAPPED in
+   PORTS.E113**: hooking `NAND_WRITE` (0x5003D9DA) and `NAND_POST` (0x5003D95C) both
+   **HOOKFAIL**. `FLASH_SAVE` (0x503EEE94) maps and its S-FLASHSAVE hook works for the
+   store-init saves (which succeed), but it is **never hit during GUI bring-up** — WinMain's
+   bring-up flash access takes E113's own driver path straight into the unmodeled controller.
+
+**Mechanism:** WinMain's startup does a flash read/write; the flash controller's interrupt /
+status bit never signals "done" (unmodeled MMIO stub returns 0), so the driver retries, prints
+`!!`, and WinMain aborts and deletes its own task → nothing GUI remains → scheduler idle.
+
+**Concrete next step (bounded device-model work):** model the flash controller (page
+0x98d00000) so its status/interrupt bit reads "done" and its ops complete — like `src/dev/scpu.mjs`
+is a stub for the SCPU. Identify, from the E113 flash driver at disasm 0x5000174b / 0x50003d39
+/ 0x500093ec, which register offset is the status/interrupt-status word and which bit value the
+poll waits for. Add a small flash-controller device (or extend the bus stub for 0x98d0xxxx) that
+returns that bit set after a write/read is issued. Alternative: map E113's flash-driver entry
+addresses in PORTS.E113 and hook a return-success stand-in there. Then re-run bring-up: WinMain
+should stay resident (WAI) and `settle('GUI bring-up')` complete, exposing the GUI task's menu
+reads for the original table-discovery goal.
+
+**Instrumentation caveats (do not re-chase):** (a) hooking a *hot* address (GUI_CREATOR
+0x50892cd4, or the flag syscalls set_flg/wai_flg) perturbs the HLE idle short-circuit — the run
+then spins to a "200000/300000 stub calls" fault from a constant garbage caller (0x5c76efe7)
+instead of grounding cleanly; the `set_flg id=0x8a` spin seen that way is an **artifact** of the
+hook breaking set_flg's wake semantics, not real firmware behavior. Use helper-wrapping
+(`steptrace.mjs`) or the single terminal-idle hook (`idletasks2.mjs`), not hot-address hooks.
+(b) `twai_flg` E113 = A(0x50017E85) still looks mismapped (0x5104a625, suspiciously high).
 
 Probes this session: `scratchpad/{idle_probe,labprobe,bringup,portchk,scpuchk,xref,mtask}.mjs`.
 
