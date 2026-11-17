@@ -118,29 +118,47 @@ each against the exact E143 table signatures. Results:
   different address and the *group-entry* layout differs, but the descriptor/table
   grammar is E143's.
 
-Tables pinned (cross-validated by code-reference **and** structure):
+Findings, graded after verification:
 
-| table         | E113 addr    | evidence                                                   |
-|---------------|--------------|------------------------------------------------------------|
-| `NULL_DESC`   | 0x7e5c6308   | repeating `lit` sentinel, bytes `00 00 00 00 03 00 00 00`  |
-| `GROUP_LIST`  | 0x7e5c533c   | `{key=0, count=20, ptr=0x7e5c50f4}`; +8 adjacency to CV    |
-| `CUSTOM_VALUE`| 0x7e5c5344   | GL+8 (mirrors E143 0x6152D6B8/0x6152D6C0); modes 1,2,3,4…  |
-| `TAB_TABLE`   | 0x7e5cda48   | 8 tabs, ids 0–7, sane page counts (parses cleanly)         |
+| item          | E113 addr    | status      | evidence                                       |
+|---------------|--------------|-------------|------------------------------------------------|
+| descriptor fmt| —            | **SOLID**   | 8-byte `{u16 type,u16 id,u32 lit}`, = E143      |
+| `NULL_DESC`   | 0x7e5c6308   | **SOLID**   | repeating `lit` sentinel `00 00 00 00 03 00 00 00` |
+| descriptor pool| 0x7e5cafa8  | **SOLID**   | 241 contiguous type-4 descriptors, lit=NULL_DESC|
+| `TAB_TABLE`   | 0x7e5cda48   | likely      | parses as 8 tabs, ids 0–7, sane page counts    |
+| `GROUP_LIST`  | 0x7e5c533c   | **DUBIOUS** | see below — probably a false positive          |
 
-E113 has **20 menu groups** (vs E143's 42), page_id range `0xf5..0x1a7`. The `+8`
-GROUP_LIST→CUSTOM_VALUE adjacency reproducing E143's exact layout is the strongest
-single confirmation.
+**Correction to the commit `095da7e` message**: it listed GROUP_LIST/CUSTOM_VALUE as
+"pinned". Verification knocked that down:
 
-Still open (next session):
-- **Group-entry layout**: under E143's 16-byte `{page_id, desc, rec}` the 20 entries at
-  `0x7e5c50f4` give every `rec=0x7e5c50e4` (wrong) — E113's entry stride/fields differ.
-  Decode by disassembling the `0x5095xxxx` groups-reader that loads `0x7e5c533c`.
-- **ROW_ORDER, TAB_THEME, TAB_IDS**: not yet pinned. Candidates found (ROW_ORDER:
-  0x7e5b13c8/0x7e5b3788/0x7e5b4a60; many weak TAB_THEME hits) but none validated against
-  the real page_ids yet. TAB_IDS is `[0..7]` (trivially derivable even if the address
-  isn't pinned).
-- Then: resolve these in `PORTS.E113` and/or make `menudata.mjs` model-parametric
-  (E113's group-entry stride + 20-vs-42 groups).
+1. **The "code immediate" filter was invalid.** `objdump -D` disassembles the *data*
+   region too, so table addresses appeared as immediates inside garbage instructions
+   decoded from data bytes. Checking for a **real** code load (a `0x50xxxxxx`
+   instruction line) of each address finds **none** — not even for TAB_TABLE. So E113's
+   menu code reaches its tables by **base-register + displacement** (load a section base
+   once, access `base+off`) or via pointers held in the menu object at `0x60454240`,
+   **not** absolute immediates. Immediate-scanning therefore cannot locate the readers.
+2. **GROUP_LIST 0x7e5c533c doesn't parse.** Its `{key=0, count=20, ptr=0x7e5c50f4}` has
+   `count=20`, but `0x7e5c50f4` is an array of 8-byte `{u32 page_id, u32 ptr}` pairs with
+   **~48+** entries, nearly all pointing at the same self-referential `0x7e5c50e4`
+   (which overlaps the array head). That is neither E143's 16-byte `{page_id,desc,rec}`
+   nor a coherent 20-entry list. Treat 0x7e5c533c as **not** the group list until the
+   reader proves otherwise.
+
+So the genuinely solid results are: the descriptor grammar matches E143, NULL_DESC and a
+real descriptor pool are located, and TAB_TABLE is a strong structural candidate. The
+**group/page organization differs from E143 and is not recoverable by structural
+pattern-matching** — it needs reader-function disassembly.
+
+Still open (next session) — now with the right method:
+- **Decode the readers by base-register tracing.** Disassemble from `menu.task
+  0x5089a153` / `menu.take 0x5089a36a` and the `0x5095xxxx` menu region, follow the
+  section-base loads and the `0x60454240` object fields to the actual group/tab/row
+  tables. Absolute-immediate and structural scans are both exhausted.
+- `ROW_ORDER`, `TAB_THEME`, `TAB_IDS` remain unpinned (TAB_IDS is `[0..7]`, trivially
+  derivable). Earlier ROW_ORDER candidates (0x7e5b13c8/0x7e5b3788/0x7e5b4a60) did **not**
+  match `page_id+4`, consistent with the group id-space being different/unknown.
+- Then resolve in `PORTS.E113` and make `menudata.mjs` model-parametric.
 
 ## State
 
