@@ -1010,3 +1010,60 @@ the outer repeat may be gated on the display coming up; fixing OSD first is the 
 display-surface registration near the ROM engine-setup 0x7e6a5600 (writes engine base 0x9c100000
 regs 0x04/0x20/0x24/0x38/0x3c). That code sets surface config the lab can read to seed guards
 honestly rather than back-fitting observed blits.
+
+### Session update (2026-11-17, final): two walls disentangled; OSD cosmetic CONFIRMED; lens pages fixed
+
+Three corrections/advances this session, each measured:
+
+**1. OSD-engine errors are COSMETIC — definitively.** `src/dev/engine.mjs` `read(off)`
+(line 316) returns `this.regs[off>>2]` — the firmware-visible register. GUARD/DEPTH errors go
+ONLY to the lab debug window via `recordError` (0x8E000000, which the firmware never reads — it
+polls engine base 0x9C100000). After a GUARD-failed `cmdFill`, the engine's status regs still
+report done/success, so the firmware proceeds exactly as on real hardware. The 16 OSD errors in
+E113's `bring_up('tft')` do NOT gate settle. **Dropped as a lead.** (They remain a lab-diagnostic
+mismatch: guards are seeded from E143 geometry — see prior section — but that is cosmetic.)
+Corollary: memory "Wall B" (OSD-geometry global 0x6055f944=0) is RESOLVED — it now reads
+0x800 (2048 = main surface width; stride 0x2000 = 2048*4 at depth 5). OSD-geometry init runs.
+
+**2. Lens-comm HW pages added (board.mjs, E118 family) — removes the bring_up fault.**
+`bring_up('tft')` for E113 faulted (fault=2) at `mov d0,(0x9bf00000)` pc 0x7dac1255 — the
+lens-unit reset `fn 0x7dac122c` ("reset 3 lens units", no-lens path, called once from lens-module
+init 0x7dac54e3) clears lens-SSC HW regs 0x9bf00000/+0x68 and 0x9bb00000/+0x04 that the lab did
+not map. Added `0x9BF00000, 0x9BB00000` to the family `stub_pages` (plain reset targets: absorb,
+read 0). Verified: E143 `check_kernel` green (0.8 s, these pages are E118-family, E143 unaffected);
+E113 `check_menu`/`check_kernel` unaffected (they fail earlier — see below — never reaching this).
+
+**3. The two genuine live walls, now cleanly separated:**
+
+- **WALL A — bring_up('tft') settle (lens-detect / SCPU sub-CPU response).** With the lens
+  pages mapped, the fault is gone but `bring_up` now SPINS (>120 s): tid1 (start-up task
+  0x50031c0c, in `extra_tasks`) re-issues SCPU lens-present query **0x20041001** (pc 0x7d9dbbf7),
+  count climbing 23→32→36+. The SCPU model (`src/dev/scpu.mjs`) is **passive storage** — on a
+  command write it stores/counts/prints; it does NOT simulate the sub-CPU computing a lens-detect
+  result. So every result word the firmware reads back stays 0 = "no lens / not ready", and tid1's
+  detect retry never concludes → the task never reaches its block (park), so the kernel never
+  quiesces. (The per-command poll `mov (a1),d0; cmp 0; lne` at 0x7d9dbbf8 terminates fine — COMMAND
+  reads 0 immediately; the non-termination is the OUTER detect retry.) Stubbing the lens/FCS WORKER
+  0x500f95cc was not enough because tid1 runs its own lens detect inline. E143 never starts this
+  detect in its tft bring-up (7 tasks, settles), so a real no-lens camera concludes "no lens" via
+  a real SCPU answer the lab does not yet model. **Next:** model the SCPU `scpulink` response for
+  0x20041001 to return "detect complete, no lens" (find the result word/encoding tid1 branches on),
+  OR seed that result so tid1 proceeds to park. This is a sub-CPU-modelling job, not a logic bug.
+
+- **WALL B — menu usable (menudata table port).** This is the test's FIRST failure and the true
+  "menu usable" blocker, independent of Wall A. `check_menu.mjs` step 0 (offline) calls
+  `menudata.groups(img)`, which reads the group-list header at `GROUP_LIST = A(0x6152D6B8)`.
+  `PORTS.E113[0x6152D6B8] = null` (explicitly UNPLACED) → `A()` returns the UNMAPPED sentinel
+  0xfe52d6b8 → `img.u16()` throws "address 0xfe52d6b8 outside the image". `groups()` (unlike
+  `tabs()`, which guards with `refuseUnmapped`) reads it unguarded, so the crash is a wild-address
+  ValueError rather than the clean "no place in E113's build" message. The E113 menu-data tables
+  — GROUP_LIST (0x6152D6B8), CUSTOM_VALUE (0x6152D6C0), TAB_TABLE/TAB_IDS, ROW_ORDER, etc. — are
+  all unported: their E113 addresses must be found and placed in the port map
+  (`emu/out/port/E113/port.json` / `src/fw/ports.mjs`). E113's menu subsystem differs structurally
+  from E143 (per prior finding), so this is a standalone RE job: locate each table in E113's image
+  by structure/xref. **Next:** find E113's group-list + tab tables (structure: u16 key=0, u16
+  count, u32 ptr → count×16-byte {u32 page_id, 8-byte descriptor, u32 record}); the valid parse is
+  42 groups, ids 0xCB..0xF4.
+
+**State committed:** board.mjs lens pages (Wall A fault fix) + this doc. No settle faked; E143
+golden green. Walls A and B both remain open multi-session RE; neither has a shortcut.
