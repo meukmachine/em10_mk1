@@ -386,28 +386,45 @@ E120/E122 (stub their whole flash path) and E118 (mount reads bit 13 only). **Re
 flash wall is cleared. (E143 golden unaffected — change is in the E118 board entry; E143/E144 use
 a different entry.)
 
-**Next wall = WinMain parks in WAI, waiting on an unsignaled event flag.** After the flash fix,
-clean E113 `bring_up('tft')` still grounds at firmware idle 0x7d9a730b (fault=7). Direct TCB read
-at the terminal idle (`scratchpad/idledump.mjs`, non-perturbing idle hook) shows
-**WinMain (entry 0x5089a153, TCB 0x6068b580) in state 0x04 = WAI** — word[3] = 0x80004, TCB
-word[6] = 0x6018f1c4 (wait-object / flag CB ptr). WinMain is **not crashed or deleted** — it
-comes up, runs its init (flash op now completing), and **blocks waiting for an event the lab
-never delivers**. This re-confirms the earlier "event-wait at idle" diagnosis (commit 6a64856):
-the remaining wall is a scheduler/event-delivery gap, not a missing device.
+**CORRECTION (same day): WinMain is NOT kept alive by the flash fix — it still self-deletes.**
+A brief WAI reading (state 0x04 at TCB 0x6068b580) was **stale freed-TCB memory**: that TCB's
+id word (offset 16) reads 0, and a scan of the live tid→TCB table at idle
+(`scratchpad/winfate.mjs`) finds **0 live slots with entry 0x5089a153** and no tid mapping TCB
+0x6068b580. WinMain is deleted; the "new wall = WAI event-wait" claim above was wrong — do not
+rely on it. The flash preset fix is a **necessary but not sufficient** sub-fix.
 
-**Concrete next step:** identify which event flag + bit-pattern WinMain's WAI is waiting on
-(from TCB 0x6068b580's wait object 0x6018f1c4, or by locating WinMain's `wai_flg`/`twai_flg`
-call in disasm near 0x5089a153), then determine whether the lab can signal it (like it signals
-VSC vsync via `display.mjs add_source`) — e.g. a display-ready / inter-task-ready flag that a
-real GUI partner task would set. Once WinMain stays runnable past the wait, `settle('GUI bring-up')`
-can complete and expose the menu-table reads for the original table-discovery goal.
+**Real post-fix state (working print capture `lab.kernel.events` filtered to 'print',
+`scratchpad/prints.mjs`).** After the fix, clean `bring_up('tft')` still grounds at idle
+0x7d9a730b (fault=7), 145 tasks, WinMain gone, and the firmware print tail is:
+- `[FLASH]intr status0 BIT` — **GONE** (the 0x9004 done-poll now passes: the fix worked for that).
+- `[FLASH]read before writing` (disasm 0x50003d39) — **still prints ~34×**: the flash *data*
+  read in that function still returns unexpected bytes (the lab backs the controller status
+  register 0x98d01104 but not the flash **data**, so reads come back garbage/0xff).
+- `[DebugBlock]:WriteQueue ERROR ID = 0x0000` (disasm 0x50005ebf) — a DebugBlock subsystem
+  write-queue failure; **ID = 0x0000 ⇒ the block was never registered/opened** (an init the lab
+  skips), the likely abort trigger.
+- `K.R.` / `10/23 16:31` / `!!` — a boot/crash record being written to flash, then `!!` (abort).
+
+**Refined diagnosis:** WinMain's bring-up writes a record to internal flash through a
+"DebugBlock" write-queue (the `[FLASH]read before writing` path 0x50003d18→poll 0x50001726, and
+the DebugBlock WriteQueue at 0x50005ebf). The lab models the flash **controller status** but not
+the flash **data** nor the DebugBlock registration, so the read returns garbage and the write
+queue errors (ID 0), WinMain hits `!!` and del_tsk's itself. This is a flash-backed
+debug/event-log subsystem, not the menu proper — but WinMain aborts on it during bring-up.
+
+**Concrete next step:** (a) find what `[FLASH]read before writing` (0x50003d39's function) reads
+— which address/window the flash DATA lives in — and back it with coherent RAM so reads/writes
+succeed; and/or (b) find where DebugBlock registers its block id (why it is 0x0000 at
+WriteQueue time — an init the lab's bring-up skips) and either run or stub it so the write queue
+accepts. Goal: WinMain survives bring-up instead of aborting on the flash debug-log write.
 
 **Instrumentation caveat (reconfirmed):** hooking the task-lifecycle syscalls (ext_tsk 0x500107E8,
-ter_tsk 0x50015E87) also perturbs the HLE idle short-circuit — it then *replays* the same
-`ext_tsk` call (constant curTCB 0x6068aef0 = tid129 entry 0x5003400f, caller 0x500309c6, d0=0x81)
-and spins to the 200000-stub-call fault, even when the hook is removed after 8 fires. That spin is
-an **artifact**; tid129's ext_tsk is NOT WinMain (different TCB) and not the real wall. Use the
-direct-TCB-read-at-idle method (`idledump.mjs`) for task-state ground truth.
+ter_tsk 0x50015E87) perturbs the HLE idle short-circuit — it *replays* the same `ext_tsk` call
+(constant curTCB 0x6068aef0 = tid129 entry 0x5003400f, caller 0x500309c6, d0=0x81) and spins to
+the 200000-stub-call fault, even when removed after N fires; tid129's ext_tsk is NOT WinMain. Use
+the working **`lab.kernel.events` 'print' capture** (`prints.mjs`) and the **live tid→TCB scan at
+idle** (`winfate.mjs`) — both non-perturbing — for ground truth, NOT syscall hooks or env.stderr
+(firmware prints route to the kernel event log, not stderr).
 
 Probes added this session: `scratchpad/{pollmask,bringclean,prints2,fwprints,catchexit,firstexit,idledump}.mjs`.
 
