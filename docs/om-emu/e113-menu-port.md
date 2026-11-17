@@ -730,3 +730,34 @@ power subsystem the way it already stands in for the sub-CPU (`xcpu_standin`). T
 sub-investigation — a fresh RE job on the display-open path, not a one-line fact.
 
 Probes: `scratchpad/{clean2,clean3,tasks2,caller,step,e143step,allow1}.mjs`.
+
+### FINDING 2026-11-17i addendum — the power cluster is allowable; the real blocker is the settle_sem the display-open path deletes
+
+Deeper probing of the QPWRSTANDBY wall reframes it. Two separable issues:
+
+**1. The power-task cluster is a known family the lab already permits.** E113's
+`MODEL_INFO.extra_tasks` (models.mjs:1574) already lists 10 service tasks, including
+**0x500441ea and 0x50043fd5 — adjacent to QPWRSTANDBY (0x500442dc)**. So QPWRSTANDBY and its
+cascade (0x500f5b75, 0x5003ca91, 0x500f7722, 0x500387f7) are the same power/service family;
+they park on `TMO_FEVR` waits like the others. Pre-allowing the 5 (clean, no monkeypatch) lets
+bring-up run much further — `started[]` then includes WinMain (0x5089a153, GUI_TASK),
+GENIFA_TIMER (0x50893f78), all 10 existing extra_tasks, and the 5 new ones — reaching the GUI
+settle. (Static creation site not an immediate in blk00; likely a T_CTSK table in blk01 or a
+computed entry — the name "QPWRSTANDBY" at 0x7da61104 is the *mailbox* name the task registers
+itself via 0x7d9c12bf id 16, not a static task-table field.)
+
+**2. The genuine blocker: E113's display-open deletes the lab's settle_sem.** With the cluster
+allowed, bring-up stops at **`settle: isig_sem = -42`**. -42 is **E_NOEXS** (object does not
+exist; kernel.mjs defines E_OK=0, E_QOVR=-43, E_CTX=-25 — no -42, so it's the µITRON standard).
+The lab's `settle_sem` is created at **construction** (menu.mjs:290, `make_settle_sem`) and gets
+id **112**. By the GUI settle it no longer exists: `isig_sem(112)` → E_NOEXS. Recreating it after
+the failure returns **id 112 again** — i.e. slot 112 is now *free*, so the firmware's display-open
+path **deleted/reinitialized the semaphore pool** (clearing the lab's 112), which E143's does not.
+
+So the E113 display-open doorbell handler, beyond activating the power family, reinitializes the
+kernel semaphore pool — invalidating the lab's early settle_sem. **Next-session fix directions:**
+(a) create `settle_sem` *after* the firmware's sem-pool init (lazily at first settle rather than
+at construction) so it lands above the firmware's range; (b) reserve a settle_sem id the firmware
+won't reclaim; or (c) model/understand the display-open sem-reinit so it leaves lab objects alone.
+Plus: add the 5 power-cluster entries to E113 `extra_tasks`, then reconcile `started[]` with
+`menu.mjs:524`'s `wantStarted`. Probes: `scratchpad/{allow2,semfate,semrecreate}.mjs`.
