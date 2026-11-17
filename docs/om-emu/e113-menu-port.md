@@ -160,6 +160,36 @@ Still open (next session) — now with the right method:
   match `page_id+4`, consistent with the group id-space being different/unknown.
 - Then resolve in `PORTS.E113` and make `menudata.mjs` model-parametric.
 
+## Anchor correction: "menu.task 0x5089a153" is GUI-App WinMain, not a menu reader
+
+Dumping exactly what `0x5089a153` references (`scratchpad/mtask.mjs`, all addresses
+script-computed to avoid hand-hex slips) shows its immediates are **GUI task startup**,
+not menu tables:
+
+| addr        | content                                                              |
+|-------------|----------------------------------------------------------------------|
+| 0x7e45dfbc  | `"[GUI App]:Start Gui Task"` (log string)                            |
+| 0x7e45dfd8  | `"[GUI App]:WinMain called"` (log string)                           |
+| 0x7e45dff8  | task-config record `{0x10101, 0x60454244, 0x30007, …}`               |
+| 0x7e45e044  | task record `{1, 0x60786df4, 0x8000, …}` (DRAM ptrs)                 |
+| 0x7e58cb18  | display geometry `{0, 0x2cf, 0x1df0000, 0x1df02cf, …}` = 719×479     |
+
+So the model-config anchor named **`menu.task` is really GUI-App `WinMain`** — the
+top-level GUI task that *spawns* the menu among everything else, not the settings-menu
+table reader. (`menu.take 0x5089a36a` is almost certainly the same task's take/dispatch.)
+The actual menu-data reader is **deeper in the call graph below WinMain**, reached
+through the `0x60454240` GUI-app object. The two usable anchors we have are both too
+high-level.
+
+**Methodology, now settled:** absolute-immediate scanning and E143-format structural
+scanning are both exhausted (above), and the named anchors are GUI-App-level, not menu
+tables. The only remaining path is **call-graph tracing from WinMain down to the menu
+component, tracking the base register(s) that address the menu data** — which hand-parsed
+`objdump`+`awk` makes error-prone (two hex transcription slips this session: 16-byte vs
+8-byte entries, and `0x7e5b`/`0x7e45` cluster mix-up). This is exactly the job for a
+decompiler (the `ghidra-reverse-engineering` skill): reliable xrefs, call graph, and
+register dataflow instead of eyeballing disassembly.
+
 ## State
 
 - Committed checkpoints: om-emu `c58aad0` (9 tasks + 4 HW stand-ins); docs `14580b7`,
