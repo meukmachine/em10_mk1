@@ -291,6 +291,34 @@ bring-up advances and the GUI task's menu-table reads become hookable.
 Probe: `scratchpad/wai_probe.mjs` (dumps WAI TCBs at idle), `scratchpad/bringup.mjs`,
 `scratchpad/idle_probe.mjs`.
 
+### REFINEMENT 2026-11-17b — wall is `settle('GUI bring-up')`, not GUI_CREATOR itself
+
+Wrapping the MenuLab `call`/`native`/`settle`/`step` helpers (`scratchpad/steptrace.mjs`)
+shows bring-up gets *much* further than the earlier note implied:
+
+- Succeeds: H-SWTIMERPOOL, software-timer init `0x50058959`, display-task init `0x501c2f13`,
+  **DISPLAY cmd 2 OPEN tft**, registry bootstrap `0x50040aeb`, **property store init**
+  (E113 `0x50202eaf`), **settings-DB init** `0x503c5473`, then several `call()`s.
+- Grounds: inside `settle('GUI bring-up')` — a `call()` runs the firmware into its own idle
+  task `0x7d9a730b` (fault 7), which the HLE flags because it expected the GUI work to
+  return or hit a known wait.
+
+So store init is **not** the blocker (it completes). `GUI_CREATOR` is reached and the GUI
+tasks are created; they run, then all block. `settle` (`kernel.mjs:331`) normally finishes
+by signalling its own semaphore even when tasks block — but here the firmware reaches its
+idle *inside* a `call()` the settle issued, i.e. the GUI tasks are waiting on **interrupts
+the lab does not present** (vsync / SCPU-event / frame-timer). Note: hooking the GUI_CREATOR
+*address* `0x50892cd4` directly perturbs the idle loop (it then spins 200000× from a constant
+garbage caller) — an instrumentation artifact; use the helper-wrap trace, not an address hook,
+to locate the step.
+
+**Next target (unchanged in spirit, sharper):** determine which interrupt source the E113
+GUI tasks block on during `settle('GUI bring-up')` and present it (the dynamic path's known
+interrupt/event-injection cost). Compare the lab's E143 GUI-bring-up interrupt delivery
+(vsync IRQ channels in `src/lab/display.mjs`, `VSYNC_FLAG_IDS`) against E113's — E113's
+vsync flag-id words / IRQ channels likely differ and aren't wired, so the lab's frame/vsync
+stand-in never fires for the E113 GUI tasks. Probe: `scratchpad/steptrace.mjs`.
+
 Probes this session: `scratchpad/{idle_probe,labprobe,bringup,portchk,scpuchk,xref,mtask}.mjs`.
 
 ## State
