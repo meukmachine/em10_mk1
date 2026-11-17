@@ -225,6 +225,44 @@ consistent with a data-section base held in a global/object and populated at ini
    label unique to the menu) and trace what code consumes it — a string-driven anchor
    instead of the GUI-task anchor, which turned out too high-level.
 
+## Dynamic path (chosen 2026-11-17): first obstacle pinpointed — E113 SCPU driver unported
+
+Decision: drive the emulator through menu-init so the firmware GUI task reads its *own*
+menu tables, then hook those reads to discover the table addresses (instead of locating
+them statically, which is exhausted). Progress this session:
+
+- **E113 reaches kernel idle with 145 firmware tasks created** (not the "9" lab stand-in
+  count): at idle, 136 DMT (created-but-never-started), 8 WAI (kernel/system tasks,
+  entries `0x5002xxxx`), 1 RDY (lab stand-in `0x8A2E0000`). The **GUI task is dormant** —
+  `GUI_CREATOR` hasn't run, so no task has entry `GUI_TASK`.
+- **The GUI-task ports are mostly correct**: `GUI_TASK` E113 = `0x5089a153` (= WinMain,
+  confirming the anchor), `GUI_CREATOR` = `0x50892cd4`, `GENIFA_TIMER_TASK` = `0x50893f78`,
+  `EYEFI_TASK` = `0x5063483b`. **`EMPTY_TASK` is NULL.**
+- **`lab.bring_up('tft')` grounds at kernel idle `0x7d9a730b`** (the Wall-H ground). It
+  calls `GUI_CREATOR` directly (`menu.mjs:510`), and that call spins to idle. The console
+  shows the cause: the firmware issues **SCPU command `0x20041001`** (sub-CPU / coprocessor
+  request) and waits for a reply, plus an **OSD-engine guard** trip, neither completed by
+  the E113 device model.
+- **Root cause is a port gap, not deep modelling**: the lab's SCPU-completion hooks are
+  unmapped for E113. In `PORTS.E113`, all of `SCPU_REQUEST 0x5005CD17`, the four reply
+  handlers (`0x5005A7F9/0x5005A85F/0x5012C87D/0x5012C8D3`), and both reply readers
+  (`0x5005A86C/0x5012C8E0`) are **NULL** — only the DRAM gate words (`0x6004315A…` →
+  `0x7dc3665x`) are mapped. With the reply hooks null, the lab never completes SCPU
+  command `0x20041001`, so `GUI_CREATOR` waits forever and grounds.
+
+### Concrete next target (bounded, code-address RE)
+Port E113's SCPU driver functions so the lab completes SCPU replies: find E113's
+counterparts of `SCPU_REQUEST`, the 4 reply handlers, the 2 reply readers, and
+`EMPTY_TASK`. These are real functions the firmware's task-creation/SCPU path references
+(unlike the menu *data*, which has no absolute code xref), so they are locatable by
+disassembling E113's SCPU/sub-CPU-link driver (memory: PER_SIO/SCPU link region ~0x7d9e,
+sub-CPU reply buffers in `0xA32Cxxxx/0xA32Dxxxx`). Once SCPU replies complete, re-run the
+`bringup.mjs` probe: `GUI_CREATOR` should create the GUI task, the bring-up should advance
+past idle, and the GUI task's menu-table reads become hookable — closing the loop to the
+menu table addresses.
+
+Probes this session: `scratchpad/{idle_probe,labprobe,bringup,portchk,scpuchk,xref,mtask}.mjs`.
+
 ## State
 
 - Committed checkpoints: om-emu `c58aad0` (9 tasks + 4 HW stand-ins); docs `14580b7`,
