@@ -906,3 +906,54 @@ context it dispatches immediately, incompatible with the onIdle deferred-dispatc
    register or the worker parks before reaching it — needs the per-task stack/trace at the fault
    to confirm which task is executing the lens command, then decide model-the-register vs
    keep-the-worker-parked. Instrument the fault with a task/stack dump next.
+
+### Session update (2026-11-17): worker is not the fault; root is the OSD engine
+
+**Worker 0x500f95cc re-classified from `extra_tasks` to `stub_tasks` (H-STUBTASK).** Running it
+natively was wrong: its own init loop (poll 0x7da8a5fb → detect 0x7d9d8915, 16 ms retry 0x7d9c1982
+until reg0 == 0, then twai-park on 0x7d9b0510) never concludes without a lens — reg0 stays 0
+forever. It is fire-and-forget (its only reader 0x7da8c596 just logs phase global 0x606b7f94, no
+block), so the lab now pre-writes `ret [],0` at its entry (new `stub_tasks` list, consumed by
+`kernel.mjs start()` via `runtime(d)` → `_bare_return` path). It starts and goes dormant. Correct,
+model-scoped, E113-only. **First attempt wrote `A(d)`** — wrong, `A()` is a port-map LOOKUP that
+returns identity for unmapped addresses, so it patched the disasm address, not the runtime entry;
+fixed to `runtime(d)`.
+
+**The fault (0x7dac1255 lens-unit write) belongs to a different task: tid 1, entry 0x50031c0c**
+(runtime 0x7d9c2c2c), the core-init task — not the worker. Stubbing the worker left the fault in
+place. tid 1's init reaches lens-unit cleanup 0x7dac122c, which zeroes 0x9bf00000 / 0x9bf00068 /
+0x9bb00000 / 0x9bb00004 — pages not in the E118 board stub list — so the lab faults on the write.
+
+**Dead end (recorded, reverted): stubbing the lens-unit pages.** Added 0x9BF00000 + 0x9BB00000 to
+the E118 `stub_pages` so the writes land. Result: the fault is *replaced by an unbounded loop*, not
+a settle. With `__DBGLOG` synchronous flushing (temporary machine.mjs hook, since reverted) the log
+showed the lens-present query **SCPU 0x20041001** issued forever (reg0 == 0 every time) from a
+rotating set of PCs (0x7d9db4ba, 0x7d996653, 0x4700164d, 0x7d9dbbf7), ~9 per cycle, interleaved
+with repeating **osd-engine ERROR** lines. Stubbing hardware pages only unmasks the real
+non-termination. Reverted the page additions.
+
+**Decisive E143-vs-E113 comparison (same `bring_up('tft')`, same dbg log):**
+
+| | osd-engine DEPTH err | osd-engine GUARD err | SCPU 0x20041001 | outcome |
+|---|---|---|---|---|
+| **E143** (golden) | 0 | 0 | 1 | **SETTLED** |
+| **E113** | 6 | 20 | 36+ (climbing) | unbounded loop |
+
+E143's display-open draws cleanly and queries the lens **once**; E113's OSD engine rejects its
+blits and the bring-up never quiesces. **The osd-engine errors are the E113-specific upstream root**
+(they appear first in the log, before the lens loop), and are a *modelled* device (`src/dev/engine.mjs`),
+so this is tractable, not unknown hardware:
+
+- **DEPTH** (6×, pc 0x7e6a5655, arg = 3): a depth-**3** blit, but E113's engine is configured
+  `depth: 5` (`DEPTH_OK`), so `cmdFill`/`cmdCopy` reject it. E113 evidently issues **both** depth-3
+  and depth-5 blits; the strict single-`DEPTH_OK` check can't admit both. (Comment at engine.mjs:11
+  says E113 fills at depth 5 — but these depth-3 commands are real and separate.)
+- **GUARD** (20×, pc 0xbd99xxxx, dst 0x80xxxxxx): blits whose destination/stride fall outside every
+  registered guard slot (`guarded()` returns false). Either E113 registers guards differently, or an
+  earlier display-plane init step the lab skips never populates them.
+
+**Current wall (next target): E113 OSD-engine (engine.mjs) DEPTH + GUARD config.** The lens-detect
+loop is downstream/concurrent; fix the OSD engine first and re-measure. No board/machine/engine code
+changed this session beyond the reverts — committed state keeps only the `stub_tasks` mechanism
+(kernel.mjs) + the E113 `stub_tasks`/`extra_tasks` edit (models.mjs). E143 golden stays green
+(check_kernel + check_menu all groups).
