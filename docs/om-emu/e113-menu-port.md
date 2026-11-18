@@ -1148,3 +1148,19 @@ GUI start events on TFT: 0x9601 → 0x9b01 → 0xf001 → 0x1100.
 - Override format gotcha: an absent key makes `A()` return identity, silently hooking an E143 address
   in an E113 image. Keys are always E143 0x50… addresses.
 - `$S/e143.asm` is in runtime addresses, `e113_full.asm` / `e120.asm` in 0x50… — mixing them cost time.
+
+### Menu walk 2026-11-18 (TFT, 16 keys, no engine/lab errors)
+
+Keys: MENU, (LEFT, DOWN) x4, RIGHT, DOWN, OK, DOWN, OK, MENU, MENU. Frames inspected by eye:
+
+- All five tabs draw with their own rows: Shooting Menu 1, Shooting Menu 2, Playback Menu, Custom Menu
+  (A AF/MF … G Color/WB, scroll bar), Setup Menu (clock `--.--.-- --:--`, language, brightness, Rec View
+  0.5sec, Wi-Fi Settings, Menu Display, Firmware).
+- RIGHT enters the row list; OK on the language row opens the 3-column language grid.
+- DOWN + OK selects 中文(繁体): the value is written and the whole UI re-renders in Chinese (Setup Menu,
+  Super Control Panel, Shooting Menu 1 on re-open) — a setting change goes through the firmware's own
+  store and resource path end to end.
+- MENU leaves to the shooting screen (0x108), MENU again re-opens (0x1102).
+
+Not walked: Custom Menu sub-pages, Card Setup / Reset, date entry, Wi-Fi, firmware screen, playback-menu
+actions (greyed without pictures). No reason found to expect failure, but untested.
