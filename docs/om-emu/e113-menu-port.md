@@ -1443,3 +1443,11 @@ Sheet built with an 800x600 variant of the sheet script (`sheet3.py`; `sheet2.py
 - Oddity, not chased: after the second menu exit the EVF shooting screen shows an extra "ISO-A LOW" mark that was
   not there after the first exit.
 - Playback Menu greying (issue A) is the same on the EVF.
+
+### Issue A experiment `q1` — DCF re-list after a shot: DEAD END
+Experiment (not kept, `storage.mjs` reverted): after `fileif_picture` closes the file, send the DCF process command 3
+("dcf lists", the one the insertion sends) again and read the count table (fact `dcf.counts`) before and after.
+Result: `DCFX counts 0,0,0,0,0 -> 0,0,0,0,0`, rc 0, Playback Menu rows Edit / Print Order / Reset Protect still grey.
+So a bare "dcf lists" does not make the database learn of the new file. Not tried: card-in (command 1) again, a full
+remove + insert (S-MEDIA) after the shot, or whether the greying reads this count table at all.
+Caution: the `q1` sheet mixes frames of an older run with the same snap prefix; only the counts line is evidence.
