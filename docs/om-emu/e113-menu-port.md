@@ -1423,3 +1423,12 @@ position is P.
   `fileif_picture` path: file written, playback list is S-CARD's stand-in, DCF database stays empty. That the three
   greyed rows key on the DCF count is inference (not probed). Upstream lab limit shared by 13 bodies, not an E113
   port fault; lifting it = porting a recorder rule for the E118 family. Not done.
+
+### Walks `r6`–`r9` — Myset, Wi-Fi Settings sub-pages (all rc 0, sheets viewed)
+- `r6`/`r7` Reset/Myset: Myset1 popup Set / Reset with help text; **Set stores** (row "No Data" → "Set").
+  RC Mode Off/On inline popup. Flash strip, drive strip, SCP cursor fine.
+- `r8` Wi-Fi Connect Settings (RIGHT opens): Private → One-Time with help text, stored in the row.
+- `r9` Private Password (RIGHT): help text + `Password : 72521432`, "Confirming OK" returns. Reset Wi-Fi Settings
+  (RIGHT): orange caution page, Yes/No; **Yes + OK** returns to the list, no fault.
+- Note for walkers: on these pages OK = "Set" (leave page), RIGHT opens the row. Several earlier sequences drifted
+  on that.
