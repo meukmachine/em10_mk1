@@ -1516,3 +1516,19 @@ the row has one.
 - Same walks: right after a menu exit the EVF shows the full icon set (flash, metering, S-AF, WB, drive, aspect,
   flash comp) for two snapshots, then falls back to the reduced set. Timed display, same family of behaviour.
 - So the earlier "extra mark after the second exit" was a snapshot landing on the other blink phase.
+
+### Walk `e1` — Edit → Sel. Image, Myset Reset (28 keys, rc 0, EV [] LOG [])
+- Playback Menu → Edit → Sel. Image: image selector opens (frame `001-0000`, `2014.01.01 00:00`, left/right arrows);
+  OK → popup `JPEG`: RAW Data Edit (grey, the lab picture is a JPEG), **JPEG Edit**, voice-memo mark. MENU backs out
+  step by step (selector → Edit page → Playback Menu → shooting screen).
+- Reset/Myset → Myset1 → popup Set / Reset with help text; Reset on an empty slot leaves "No Data".
+- Not walked: JPEG Edit's own pages (Shadow Adj, Redeye Fix, crop, …) — the lab's picture is a stand-in file with a
+  black frame, so image-processing results there would say nothing about the port.
+
+### State of the session goal after these walks (honest)
+- Menu: every tab (Shooting 1/2, Playback, Custom A–K, Setup) opened on TFT, tabs + D/F/Setup on EVF; values change and
+  store; Format, Reset, Reset Protect, Wi-Fi wizard, date entry, Myset set all complete. No known menu row that
+  faults. Not exhaustively walked: every single row's popup, JPEG Edit, Print Order confirm, Image Overlay (grey).
+- Tests: `npm run test:pure` 278/278; `modelcheck E113` ok tft+evf; `modelcheck E120 --no-port` ok tft+evf.
+  `checks/*` are E143-only by construction and do not run for E113. `modelcheck E143` fails on the parent commit
+  too (pre-existing). Full `bin/test.mjs` was OOM-reaped on this 3.4 GB machine and was not rerun.
