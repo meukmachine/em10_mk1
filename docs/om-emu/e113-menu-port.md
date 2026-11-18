@@ -1406,3 +1406,20 @@ position is P.
 - Regression: test:pure all passed (278/278, 256/256); modelcheck E113 tft+evf ok; E120 --no-port tft+evf ok.
 - Still open (issue A): Playback Menu Edit / Print Order / Reset Protect greyed with a picture on the card (`r3`
   tiles 20+ did not revisit that tab; `p2` did).
+
+### Walks `r4`, `r5` — date entry, language, playback menu with pictures (om-emu mode-dial commit, rc 0, sheets viewed)
+- Setup → date/time: field editor works (Y 2014, M 01, D up/down wraps 01 → 31 → 30 → 29, hour, minute, format
+  field); MENU cancels (`r4`); OK on the last field stores — Setup row shows `'14.01.01 00:00` and the shooting
+  screen's "set the date" banner (Y/M/D) is gone (`r5`).
+- Language list (two pages) → 日本語: every menu, footer and the SCP banner switch to Japanese (`r4`).
+- Two shots in one session: playback shows frame 2 (`002-0000`, counter 2).
+- **Issue A still open:** Playback Menu Edit / Print Order / Reset Protect greyed with 1 picture on the card, also
+  when the menu is opened from playback (`r5`). Cursor skips them (down from rotate → Connection to Smartphone).
+  Playback frame is black with file number `001-0000` (a camera names `100-0001`) — suspicion: the lab-stored
+  picture is not a DCF object the edit predicates accept. Unverified.
+- Issue A, cause by code read (om-emu `src/lab/camapp.mjs dcf_db()`, `storage.mjs write_picture`): the lab registers
+  a picture in the firmware's own DCF database only on bodies with the whole-file recorder fact (`recorder`: E143,
+  E146, E147, E144, E148) or native REC_FILE. E113 (`recorder: null`, like E120 and 11 others) takes the
+  `fileif_picture` path: file written, playback list is S-CARD's stand-in, DCF database stays empty. That the three
+  greyed rows key on the DCF count is inference (not probed). Upstream lab limit shared by 13 bodies, not an E113
+  port fault; lifting it = porting a recorder rule for the E118 family. Not done.
