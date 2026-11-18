@@ -1375,3 +1375,34 @@ position is P.
 - `test:pure`: all passed (firmware facts 278/278, purity 256/256).
 - `bin/modelcheck.mjs E113`: tft ok, evf ok. `bin/modelcheck.mjs E120 --no-port`: tft ok, evf ok.
 - E120's wizard itself not walked (fact + modelcheck only).
+
+### Walk `r1` — Custom Menu K / J (E113 TFT, om-emu `54f2550`, rc 0, sheet viewed)
+- Custom Menu list scrolls A..K (up from A wraps to K). K Utility page: Pixel Mapping + Eye-Fi greyed, Level Adjust
+  popup ("Reset" / "Reset to default."), back.
+- J Built-In EVF: Info Settings checkbox page — Highlight&Shadow toggles on with OK; Built-in EVF Style popup with
+  preview bitmap, Style 3 → Style 1 stored and shown in list. Exit to SCP (P mode), menu reopens.
+
+### Walk `r2` — Setup Menu, Wi-Fi Settings, direct buttons (om-emu `54f2550`, rc 0, sheet viewed)
+- Setup Menu: Wi-Fi Settings page (Wi-Fi Connect Settings Private, Private Password, Reset share Order greyed,
+  Reset Wi-Fi Settings) opens and backs out. Menu Display On → Off popup with preview; after it the Custom Menu
+  tab is gone from the tab column (as on the camera).
+- Shooting screen: DOWN = drive strip (Single → Sequential H stored, SCP shows it), RIGHT = flash strip, OK = SCP
+  cursor (ISO "Recommended ISO").
+- Not reached in this walk (key sequence drifted): Private Password screen, Reset Wi-Fi Settings → Yes, Myset.
+- Date line shows `'--.--.-- --:--` (lab RTC unset) — not investigated.
+
+### Open issue B solved — mode dial (om-emu `c834828`)
+- Cause confirmed. E113's dial query `0x500fa591` is E143's walk (position byte `0x606b7fe8`, count the group's
+  0x1901 entries) but compares in d1 and takes the code through leaf `0x500fc8c5`
+  (`extbu d0; asl2 d0; mov 0x7dbc1558,a0; mov (d0,a0),d0; retf`) — the fact rule only knew E143's inline load.
+- Table `0x7dbc1558`: 49, 1, 2, 3, 4, 10, 57, 42, 51 = iAUTO, P, A, S, M, MOVIE, PHOTO_SESSION (Photo Story), SCN,
+  ART — nine positions, the E-M10's dial. Names from the build's `modedial_to_code` table at `0x7dd17064`
+  (NON 0, P 1, …). No closing 0 after the table (next words belong to another table); lab reads as many words as
+  the dial has positions.
+- Fix: second reader form in `facts.mjs modeDial`; E113 fact regenerated, E120 hand-edited (table `0x601a8fd8`,
+  same codes). Lab dial now starts at position 1 (P).
+- Verified walk `r3`: wizard to 3/3, End Wi-Fi → screen stays **P**, nothing greyed; s1/s2 stores picture,
+  playback shows it; Picture Mode list opens. rc 0.
+- Regression: test:pure all passed (278/278, 256/256); modelcheck E113 tft+evf ok; E120 --no-port tft+evf ok.
+- Still open (issue A): Playback Menu Edit / Print Order / Reset Protect greyed with a picture on the card (`r3`
+  tiles 20+ did not revisit that tab; `p2` did).
