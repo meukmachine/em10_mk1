@@ -1594,3 +1594,52 @@ the row has one.
 - Tests: everything that can run for E113 runs and passes (table above + pure + modelcheck). `checks/*` pin E143
   and cannot run for E113. Full `bin/test.mjs` (all ~19 bodies; only E113/E120/E143 firmware is on disk, and it
   was memory-reaped on this 3.4 GB machine) was **not** rerun.
+
+## Session 2026-11-18e — Myset recall fixed (S-MYSETLOAD)
+
+Supersedes the earlier "Myset recall does not restore Image Aspect, cause not determined" note.
+
+**Symptom.** Reset/Myset → Myset1 → Yes returned to the menu without fault but restored nothing
+(Image Aspect, Digital Tele-converter stayed at their changed values). Same on E120.
+
+**Narrowing walks.**
+- f6: Reset (Basic) → Yes restores 16:9 → 4:3, so settings restore as such works.
+- f7: Digital Tele-converter Off → On is also not restored by recall → recall had no effect at all.
+- f8: 16 MB RAM-dump diff before/after recall — DEAD END (≈10k differing bytes of heap/frame churn).
+- f9: observers at the recall key: none of 0x508626f6 / 0x501d704a / 0x501dbeba / 0x501db306 hit.
+  0x501d6eb4 hit only at Set (d0 = 0x35). → the request is lost before the firmware load.
+- f10: per-key stand-in hit deltas: recall key has 5 × S-TRAACK, no dropped sends.
+- f11: dump of those transactions. Recall (Yes) sends TRA 12971 (0x32ab) with +32 = 0x35 (53), +36 = 0,
+  then 0x4050, 0x4023 (arg 0x39), 0x4074, 0x32a8. (Set sends 0x4023 arg 0x258, 0x4074, 0x32a8.)
+
+**Firmware chain (E113, disasm 0x50… notation).**
+- TRA 12971 builder 0x50637871 (d0 → +32, d1 → +36); callers 0x506c2976, 0x507902b9, 0x50792aa1.
+- Component method 0x5071c1c0 (a0 = component, d0 = data id, d1 = kind): kind 0 → settings device
+  (component +284) vtable slot +0x30 = 0x508626f6, which calls the settings API load 0x501d704a(id) and logs
+  `loadCustom:MyMode`. Kind 1 → slot +0x38 (gated by word 0x6044ff68). Sibling slots 0x50862714 / 0x50862732
+  call 0x501d6fb6 (shortcut restores).
+- 0x501d704a: gate 0x50203a68 (byte 0x606fcc10 == 1 skips), 0x501d6eb4(id, 1, &out) looks the id up in the
+  6-byte-entry table at 0x6044ab54, then loader 0x501dbeba.
+- Data id 53 = Myset1: the same id Set saved under.
+- 0x508626f6 is entered by `calls` (own `add -8,sp` / `ret [],8`), NOT `call` — calling it with a `call`
+  frame half-works then returns to a wild pc (0xb62ea4e0) and corrupts the OSD (BMP_LUT error). Dead end noted.
+
+**Cause.** The lab's default mode acks every HLS transaction at the exec (S-TRAACK) without running the
+component, so the load never ran. Lab-wide design, not E113-specific.
+
+**Fix (om-emu a8aceae, branch e113-port).** Fact `myset_load` (src/fw/facts.mjs `mysetLoad`):
+derived from the image — the one function of the load's form that logs `loadCustom:MyMode`, plus the
+12971 builder; E113 load 0x508626f6, E120 load 0x508d7b64. Stand-in S-MYSETLOAD (src/lab/camapp.mjs): on TRA
+12971 with kind 0, calls the load after the step with the request's data id; other kinds are refused. Not
+active under camapp 3 (components native).
+
+**Verification.** Walk f13 (stock walk script): Set Myset1 (tele-converter Off), set tele-converter On,
+recall Yes, leave menu, reopen → Digital Tele-converter reads Off; shooting screen loses the tele-converter
+icon. The menu list drawn immediately after Yes still shows the old value until the menu is reopened
+(not checked against a real camera).
+Regression: test:pure all passed (facts 278/278), modelcheck E113 tft+evf ok, modelcheck E120 --no-port
+tft+evf ok, E143 check_kernel all groups passed, check_menu --quick 0 problems.
+
+**Still open / honest state.** Full `bin/test.mjs` not rerun (memory limit); `checks/*` are E143-only;
+edit save and erase remain lab-refused; not every row popup opened; Myset recall verified on E113 only
+(E120 gets the same stand-in, modelcheck passes, no recall walk rerun there).
