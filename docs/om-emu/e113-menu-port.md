@@ -1507,3 +1507,12 @@ note: E120 does NOT share issue A, it has `rec_native: true`.)
   commits (SCP shows the 2s self-timer).
 With D, F (r10), J, K (earlier walks) every Custom Menu letter A–K has now been opened and a value changed where
 the row has one.
+
+### EVF "ISO-A LOW" oddity chased — walks `v1`, `v2`: firmware blink, not a fault
+- `v2` (EVF, keys `s1,s1,s1,menu,menu,s1×5`, rc 0): with nothing but repeated S1 the `ISO-A LOW` mark is absent,
+  present, absent, …, i.e. it depends on time, not on the key history → the firmware blinks the auto-ISO value
+  (reading: exposure warning; no lens, aperture `-.-`, lab AE value below the ISO range, hence "LOW". The reason
+  for the blink is inference; that it is time-dependent is observed).
+- Same walks: right after a menu exit the EVF shows the full icon set (flash, metering, S-AF, WB, drive, aspect,
+  flash comp) for two snapshots, then falls back to the reduced set. Timed display, same family of behaviour.
+- So the earlier "extra mark after the second exit" was a snapshot landing on the other blink phase.
