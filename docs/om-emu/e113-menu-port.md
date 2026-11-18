@@ -1720,3 +1720,63 @@ list still +2; reopen/MENU; MENU, MENU → Custom Menu → shooting screen. The 
 **Regression after S-MICMON + udf06 change:** test:pure all passed (facts 278/278), E143 check_isa
 (125/125 UDF functions) and check_kernel all groups passed, modelcheck E113 tft+evf ok, modelcheck E120
 `--no-port` tft+evf ok.
+
+### Whole Custom Menu sweep `cw` — every row A–K opened and cancelled (om-emu `17859c3`)
+
+Sweep driver with the row limit raised (`OM_ROWS=130`) and started on Custom A row 1: for each row
+RIGHT (open), frame hash must change, MENU (cancel), frame hash must return to the list's; DOWN; ends
+when the frame equals the first one again (DOWN crosses pages, K's last row wraps to A's first).
+
+Result: **92 rows, 92 opened, 0 ERR, 0 DRIFT, 0 NOOP, wrap reached, EV [] LOG []**. All 92 "open"
+frames viewed on contact sheets: A (AF Mode … AF Area Pointer, 11), B (Button Function, Dial Function,
+Dial Direction, Mode Dial Function), C (Rls Priority … Release Lag-Time), D (HDMI … Multi Function
+Settings incl. Picture Mode Settings, Histogram Settings, Peaking, USB Mode), E (EV Step … Anti-Shock,
+ISO-Auto Set, Live BULB/TIME, Composite Settings), F (X-Sync, Slow Limit, exposure-comp+flash),
+G (quality Set, Pixel Count, Shading Comp., WB, All WB, Keep Warm Color, flash+WB, Color Space),
+H (Quick Erase … Copyright Settings, dpi Settings), I (Mode, Movie mic, Movie Effect, Wind Noise,
+Recording Volume, Movie+Photo Mode), J (EVF Style, Info Settings, Displayed Grid, EVF Auto Switch,
+EVF Adjust, Half Way Level), K (Exposure Shift, Warning Level, Level Adjust, Touch Screen Settings,
+Electronic Zoom Speed).
+
+Two rows are greyed and skipped by the firmware's cursor, so not opened: **K Eye-Fi** (no Eye-Fi card
+in the lab — expected) and **K Pixel Mapping** (greyed by the firmware; cause not chased — OPEN).
+The sweep opens and cancels; it does not commit a new value in every popup (commit verified by the
+earlier walks and sweeps for a sample of rows per popup kind).
+
+### Full `bin/test.mjs` cannot complete on this machine — fact
+
+`bin/test.mjs` spawns per-body tests for about twenty bodies (E146, E147, E144, E142, E134, …). Only
+E113, E120 and E143 firmware is unpacked here (`unpacked/`), so the full run cannot pass here
+independent of memory. What can be run for E113 is every E113 entry of it, one process at a time:
+`test_storage --session`, `test_storage --hls`, `test_playinfo`, `test_erase`, `test_touch`, plus
+`test:pure`, `bin/modelcheck.mjs E113`.
+
+### E113 per-body tests rerun on om-emu `17859c3` (serial, one process at a time)
+
+`test_storage --session` 116/116 units + 43/43 in play; `test_storage --hls` rc 0; `test_playinfo`
+21/21; `test_erase` 31/31; `test_touch` 11/11. All rc 0.
+
+### E120 Recording Volume popup — still failing (E120-only, OPEN)
+
+Retested with S-MICMON: opening the popup on E120 (Custom I, row 3) still ends
+`GDB m435f434e,1: E14` right after GUI log `info->part_menu_2nd_mic_level_update settingValue[%d]`,
+inside the opening step, before any notification is due (TRA 13530 issued twice). 0x435f434e is ASCII
+("NC_C") read as a pointer — an uninitialised or mis-typed record in the E120 popup's level-update path.
+Not an E-M10 Mark I matter; not chased.
+
+### K → Pixel Mapping greyed — chased, cause NOT found (dead end recorded)
+
+Facts found:
+- sdk-api console table (file 0x9f97xx, 12-byte {tag, name, fn}): `G01 execute` fn 0x50671452,
+  `G02 canPixelMapping` fn 0x50671504; long names `PixelMapping::execute` / `::canPixelMapping`.
+- PixelMapping singleton getter 0x50697cc4 (object *0x6044eae8); vt+0 execute, vt+4 canPixelMapping
+  (method 0x50697c22 → impl 0x506b319e).
+- canPixelMapping = synchronous HLS transaction **13526** (ctor 0x50638425; 13525 ctor 0x506383fb,
+  13527 ctor ~0x50638464). Component handler at 0x50793661 answers constant 1.
+- Only GUI callers of the singleton: 0x50992c35 (canPixelMapping == 1 → 0x50992c4a execute) — the
+  function-dispatch (execution) path, not the menu's enable state.
+
+**Dead end:** answering transaction 13526 with 1 in the lab (experiment, reverted): the row stays grey
+and no 13526 is issued while the K page is drawn — the greying is decided elsewhere (menu enable
+condition not located). Also not time-based: still grey minutes into the `cw` sweep. Whether a real
+E-M10 greys Pixel Mapping in this state (no shot taken, lab lens) is not known; no camera check done.
