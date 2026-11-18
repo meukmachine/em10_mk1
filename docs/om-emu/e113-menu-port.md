@@ -1993,3 +1993,16 @@ words are per body: use the map of E143 `0x603710f8`).
   saves; the save path is the image pipeline, not menu code).
 - E146 `test_touch`: upstream failure (above).
 - E120 native erase (no `erase` / `erase_named` fact matches E120).
+
+### Correction (2026-11-18, later): "E146 test_touch fails" was a mis-run, not a failure
+`test/test_touch.mjs` covers only the bodies of its `TOUCH_ICON` table; E146 is not in it and
+`models.mjs` has `touch: false` for E146. The gate (`bin/test.mjs` line ~580) runs the file for E143
+and `TOUCH_BODIES` only. Running it by hand with `OM_EMU_MODEL=E146` composes the start frame of a body
+the test was never written for (`composite NONE: UNWRITTEN … ch 2 off 0x04e0` = OSDCP2 not yet written
+at that body's start screen). So there is no E146 touch test to pass; strike it from the open list.
+
+JPEG Edit save, looked at again: the refusal is `EDIT_SAVE` in `src/lab/camapp.mjs` (finding 141, 15
+request ids: resize, trimming, colour, red-eye, shadow, e-Portrait, aspect, RAW edits, overlay, movie).
+The lab runs no edit; finishing the request would report a file never written. Doing it for real needs
+the play module native plus the image library's edit kinds (`playmod.mjs` is E143-only and only decodes
+a view). That is a feature the emulator lacks on every body, not an E113 port gap.
