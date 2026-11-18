@@ -1780,3 +1780,61 @@ Facts found:
 and no 13526 is issued while the K page is drawn — the greying is decided elsewhere (menu enable
 condition not located). Also not time-based: still grey minutes into the `cw` sweep. Whether a real
 E-M10 greys Pixel Mapping in this state (no shot taken, lab lens) is not known; no camera check done.
+
+### K → Pixel Mapping greying SOLVED, Start runs (om-emu 79f2bb8)
+
+Supersedes the "cause NOT found" section above.
+
+**Row greying mechanism (all menu rows, E113, disasm addrs; runtime = +0x2d991020):**
+page draw loop 0x509420a5 → singleton 0x506673cb vt+0 (impl 0x50667432, arg = item id) → 0x506c2338 →
+restriction evaluator **0x506c3c18**. It looks the item up (lookup fn 0x506c3cd0) in a table at runtime
+**0x7e3b4ce0**: 495 records × 12 B (u16 item id @0, pointer to condition-index bytes @4, u8 count @8), then
+calls each condition from the fn-pointer table at runtime **0x7e3b3cd4** (u32 each). Any nonzero answer =
+restricted = grey row. Context kept in 0x6075d41c..24.
+
+| item | id | conditions |
+|---|---|---|
+| Pixel Mapping | 0x800 | 1, 2, 47, 95, 118 |
+| Eye-Fi | 0x193 | 47, 48, 56, 95, 119 (grey is legit: no Eye-Fi card) |
+| Exposure Shift | 0x111 | 2, 15, 16, 17, 18, 23, 27, 28, 42, 95 |
+| (0x1aa) | 0x1aa | 2, 95 |
+
+Conditions read: 1 = 0x506c3dac (DB item 1008 == 2); 2 = 0x506c3dc7 (store query 0x501d6df2);
+47 = 0x506c4344; 95 = 0x506c4c04 (0x506c5550() & 16); **118 = 0x506c50d9: `api_rec_Get_LensState`
+(0x5020bf49) == 0 → restricted**. Its getter 0x501129c5 = `movhu (0x606bad40),d0; extbu; retf`; the word is
+written by the lens mount handler: 1 on messages 1/4 (0x5010eaa8), 0 on 2/3 (0x5010eb08).
+
+**Cause:** the lab's S-LENS mounts a lens through the driver record only; the mount handler never ran, the
+word stayed 0 = "no lens" → Pixel Mapping greyed (a real body without a lens greys it the same way).
+**Fix:** fact `lens.attach_state` (rule `lensAttachState`: the named API's `mov 1,d0; mov name,a0; call;
+call G` and G's word), S-LENS writes it 1. E120's Get_LensState has another shape (maps 1→0x20, 0→0x21),
+E143 has no such name → fact absent there, nothing written.
+
+**Start (execution path):** OK on Start → 0x50992c35 canPixelMapping (sync TRA 13526, answered 1) →
+0x50992c4a execute → component 0x506ba41a → `api_rec_Save_Pixelmaping` 0x5020d8fe → parameter save
+0x50042bd7: BKRAM store save 0x50040a41 via descriptor *(0x609d9f08), EEROM store save 0x50040a7c via
+*(0x609d9f0c) (error traces DBG_PRM_PROC_BKRAM_SAVE_ERR / _EEROM_SAVE_ERR). A descriptor holds its two flash
+sectors at +4/+8 (the save alternates, 0x50040970) and the size at +20 (0x50040844); checksum 0x50040bf0
+(16-bit two's-complement sum). The EEROM save issues the file system's NAND access 0x5003afaa: 0x10000
+bytes, op 0 (write), flash 0xbffea000. The lab's S-FSNAND refused it (only the FS area is modelled).
+**Fix:** fact `param_store` (rule `paramStore`: the two descriptor pointer words, found by the save's
+error-trace form) + **S-PRMNAND** in storage.mjs: a descriptor's sector reads erased until written, writes
+kept for the session. `api_rec_Calculate_Pixelmaping` (~0x5020d8b0, request 25) not looked at.
+
+**Verified:** frames — row white, Start popup opens, OK returns to the K page with no lab error, second
+OK reopens Start, MENU ×2 back to Custom Menu. test:pure all passed (facts 278/278); modelcheck E113
+tft+evf ok; modelcheck E120 --no-port tft+evf ok. NOT verified: that the mapping itself does anything (no
+sensor model), and no busy bar was seen between OK and the page (frames are per key only).
+
+**Dead ends / traps:**
+- `fact(path, null)` THROWS on a ported body that lacks the fact (broke E120 storage bring-up) → new
+  `factIf(path)` in model.mjs for facts only some bodies have.
+- First lensAttachState rule scanned every 0x80 byte in the image; replaced by string-load anchored form.
+- Leads that were NOT the greying: Eye-Fi API 0x5020410d, SettingController console impls, isEnabled vt+16,
+  0x509aad72 (Wi-Fi wizard only), TRA 13526 (execution gate only).
+- S-LENS on E113 still writes LENS_ATTACHED / LENS_VALID / the lens static default at their E143 addresses
+  (absent in PORTS.E113 → identity). Pre-existing, harmless so far, unfixed.
+
+**Still open vs the session goal:** `checks/*` are E143-only; full `bin/test.mjs` needs ~20 bodies' firmware
+(only E113/E120/E143 unpacked) and was memory-reaped; JPEG Edit save = lab-wide refusal; row sweeps were
+open+cancel, not every value committed; E120 Recording Volume popup E14 and E120 Myset recall unverified.
