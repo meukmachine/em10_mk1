@@ -1451,3 +1451,45 @@ Result: `DCFX counts 0,0,0,0,0 -> 0,0,0,0,0`, rc 0, Playback Menu rows Edit / Pr
 So a bare "dcf lists" does not make the database learn of the new file. Not tried: card-in (command 1) again, a full
 remove + insert (S-MEDIA) after the shot, or whether the greying reads this count table at all.
 Caution: the `q1` sheet mixes frames of an older run with the same snap prefix; only the counts line is evidence.
+
+### Issue A solved — `q2` remount after each fileif picture (om-emu `dcf_remount`)
+Experiment `q2`: after `fileif_picture` closes the file, send the removal's and the insertion's requests again
+(`storage.remove` + `storage.insert`). Count table (fact `dcf.counts`) `0,0,0,0,0` before, `1,0,1,0,0` after; the
+Playback Menu rows Edit / Print Order / Reset Protect are **enabled**. Confirms both inferences: the greying keys on
+the firmware DCF count, and the DCF database learns of a fileif file only at a mount.
+Kept as a model flag: `models.mjs` E113 `dcf_remount: true`, acted on at the end of `storage.mjs fileif_picture`.
+`npm run test:pure` 278/278 with the change.
+
+### `q3` — `rec_native: true` on E113: DEAD END
+Tried making the picture go through the native REC_FILE path (as E120 does). Session stops at
+`E113: neither src/fw/ports.mjs FACTS nor src/fw/models.mjs gives rec_file` (`rec.mjs recFacts`). E113 has no
+`rec_file` fact and no whole-file recorder; porting that rule is a separate job. Reverted. (Correction of an earlier
+note: E120 does NOT share issue A, it has `rec_native: true`.)
+
+### Walks `q4`–`q6` — Playback Menu pages with a picture on the card
+- `q4` (two shots): Edit page opens (Sel. Image; Image Overlay grey), Print Order page (single / ALL), Reset Protect
+  Yes/No page. Reset Protect → Yes → OK stopped at
+  `S-MDAEND: the media control's command 5 (media 0): only the format's (1) end is stood in`.
+- `q5`: Print Order → ALL → OK opens the date page (No / Date / Time); MENU backs out cleanly, PLAY shows frame
+  `001-0000`, `2014.01.01 00:00`.
+- `q6` (experiment, command 5 let through, its end ignored): the end arrives from a site the lab lists as "another
+  command" (return address 0x7dfcfff4 runtime, 0x5063efd4 in the disassembly), event ids 59,46. With the end
+  dropped the screen stays on **Busy** forever (every later key shows Busy) — so the end's closure must run, as for
+  format, but without format's bookkeeping (renumber, format count, `card_formatted`).
+
+### Reset Protect → Yes solved — `q7` dead end, `q8` fix (om-emu S-MDAEND, command 5)
+- `q7` (experiment): treated the command-5 end like format's — read event +28 as a closure object and ran it through
+  its vtable. Fault `GDB mfef820cf,4: E14`. DEAD END: the event is a different class.
+- Disassembly (E113 0x50… addresses): the "other" site at 0x5063efcd posts an event built by ctor 0x5063278f:
+  id 11835, `(28,ev)` = plain function pointer (0x5063ec68), `(32,ev)` = its argument (an event object from
+  0x50633487). The event's destructor 0x506327b1 does `calls fn` with `a0 = (32,ev)` when the pointer is non-zero —
+  a run-on-delete callback. On the body the camera base (Cab_CameraBase, HLS component) takes and deletes the event;
+  in the lab that component does not run, so nothing ever calls it → Busy forever (`q6`).
+- Fix: `facts.mjs MEDIA_LIB.cab` gains `unprotect: 5, plain: { fn: 28, arg: 32 }`; `media.mjs` accepts start command
+  5, records the other-site end as a plain end and in `_end` calls `fn(arg)` itself (and zeroes the event's pointer so
+  a later destructor does not repeat it). Format's bookkeeping (renumber, format count, `card_formatted`) is not run
+  for it. Any other command still throws.
+- `q8` walk, rc 0, EV [] LOG []: Reset Protect → Yes → OK returns to the Playback Menu list, cursor moves, MENU
+  exits, PLAY shows `001-0000`, MENU opens again.
+- Limits: verified on E113 only; the offsets 28/32 and the command number 5 are E113 observations placed in the
+  shared library fact, other bodies of the family not checked.
