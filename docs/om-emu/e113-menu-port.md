@@ -2034,3 +2034,12 @@ user (emulator-wide missing feature).
   **Lesson:** a new fact rule must be checked on every body, not only the three unpacked ones — keep
   all 20 unpacked.
 - **Run 2** started after the fix; result below when it ends.
+- **Run 2: stopped by Claude Code's memory reaper at about 2 h** (15:05 → ~17:05; "system critically
+  low on memory while the session was idle" — not a test failure). It had printed 65 of 98 result
+  lines, none failed, stderr empty (last: "the second card slot: E143 ok, E146 ok"). The facts
+  section, the only one that failed in run 1, comes near the end and was **not reached**; its fix is
+  verified only standalone (`test_facts` 1598/1598). So: no single clean full-gate run exists yet.
+  Not restarted (reaper's rule: only when asked). To make it survive: start Claude Code with
+  `CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1`, or run the gate in a plain terminal:
+  `cd research/om-emu-src/emu && OM_FW_DIR=$PWD/../fw NODE_OPTIONS=--max-old-space-size=5500 node bin/test.mjs`
+  (Node 26 on PATH; ~3 h).
