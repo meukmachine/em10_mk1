@@ -1164,3 +1164,64 @@ Keys: MENU, (LEFT, DOWN) x4, RIGHT, DOWN, OK, DOWN, OK, MENU, MENU. Frames inspe
 
 Not walked: Custom Menu sub-pages, Card Setup / Reset, date entry, Wi-Fi, firmware screen, playback-menu
 actions (greyed without pictures). No reason found to expect failure, but untested.
+
+## FINDING 2026-11-18b — value-popup commit hang = unmodelled second timer unit (Timer2); fixed
+
+### Symptom
+Custom Menu (and every other) value popup: OK on a value never closed the popup. The emulator ran an event storm
+instead and MENU no longer backed out. Same storm on E120 (walk `xE120`) — family-wide.
+
+### Root cause (D on E113, verified by fix)
+- OK on a value sets the GUI's awaited event word (E143 `0x603710f8` → E113 `0x6045e348`) to `0x9ac6`
+  (EVT_10MS_WIZARD_MENU) and starts Genifa timer 522 for 100 units. While a word is awaited, GuiCallerImp re-posts
+  every other message. If the timer never fires, the re-post loop is the storm.
+- Genifa timer task `0x50893f78`; its 10 ms tick callback `0x50893f46` (ms clock `0x60452d7c`) hangs off OS cyclic
+  id 10 (handle `0x60452d74`) → software-timer driver → **second hardware timer unit at `0x9b800000`**, which the
+  emulator did not model (board.mjs had `soft_tick: null` for the E118 family; docs/model-survey.md finding 155).
+- So every software timer of the body stood still; anything that waits for a GUI timer hung.
+
+### Timer2 register facts (E113, disassembly addresses)
+| Fact | Value | Source |
+|---|---|---|
+| channel table | `0x7d998830`, 15 × 12 B: reg ptr, IRQ, handler | D |
+| mask table | `0x7da64808`, 15 × 12 B: status ptr, IE ptr, bit | D |
+| channel n regs | `0x9b800010 + 12n`: ctl +0, reload +4, +8 | D |
+| ch 0–9 | status `0x9b8000c4` / IE `0x9b8000dc` bits 0–9, IRQ 24 (handler `0x7d9e23be`) | D |
+| ch 10–14 | own status `0x9b8000c8..` / IE `0x9b8000e0..` bit 0, IRQs 25–29 | D |
+| start | `0x50051072`: status=bit, IE\|=bit, ctl=1 | D |
+| stop | `0x500510a1`: IE&=~bit, ctl=0, status=bit | D |
+| ISR | `0x500511d4`; allocator `0x500510d2` | D |
+| count conversion | `0x5005b37c`, rate from `0x5005affb` (32768 Hz / 24 MHz sources); max reload 1023 | D |
+| after boot | ch0 ctl 1, reload 0x21 (2 ms service) | X (emulator) |
+| count rate | 16384 Hz (33 counts ≈ 2 ms) | **I — inferred, not measured on camera** |
+
+### Fix (om-emu `0febbf6`, branch e113-port)
+- new `emu/src/dev/timer2.mjs` (class `Timer2`): MMIO block, per-channel ctl/reload, status write-1-to-clear,
+  IRQ line = status & IE per group. Unknown widths / ctl values > 1 throw BUS (no silent guesses).
+- `emu/src/machine.mjs`: built only when the board gives `timer2`.
+- `emu/src/fw/models.mjs`: `timer2` board fact on **E113 only**. E120 and siblings likely share the unit but their
+  IRQ numbers were not read — left unmodelled, so E120 still has the popup storm (known limit).
+
+### Verified after fix
+- `bin/modelcheck.mjs E113`: tft ok, evf ok, exit 0.
+- Walks (all rc 0, no engine/lab error), TFT contact sheets viewed:
+  - `wR` 21 keys: Custom C, Rls Priority C On→Off commits, popup closes, MENU backs out to shooting screen.
+  - `y1` Shooting Menu 1: Reset/Myset list, Picture Mode Natural→Muted, record-mode page, Image Aspect 4:3→16:9,
+    Digital Tele-converter Off→On; exit shows Muted/16:9 on the SCP; re-entry shows the values persisted.
+  - `y2` Custom E (Noise Reduct. Auto→Off), F (X-Sync/Slow Limit popup), G (quality Set page, pixel count), second
+    custom page H/I/J/K listed.
+  - `y3` Setup: brightness/colour-temperature screen, Rec View 0.5→0.3 sec, Wi-Fi Settings page, Menu Display
+    popup, Firmware screen ("Body : 0.0" — version word not seeded), exit.
+  - `y4` EVF (800×600): same commit walk, 21 frames viewed, popup opens/commits/closes, exit to EVF shooting view.
+- Side effect: menus show more/correct rows (Shooting Menu 2 drive/self-timer, Image Stabilizer, Time Lapse;
+  fps 3.5/8) — rows that depended on a timer-driven refresh.
+
+### Not walked / open
+- Custom J/K sub-pages, D deeper pages; playback-menu actions with pictures on the card; Card Setup → format Yes;
+  Reset execution; date/time commit.
+- `sheet.py` assumes 720×480; EVF needs the 800×600 variant.
+
+### Regressions after Timer2 (2026-11-18)
+- `bin/modelcheck.mjs E120 --no-port`: tft ok, evf ok (rc 0) — E120 unaffected (no `timer2` board fact).
+- E143 `checks/check_kernel.mjs`: all groups passed. `checks/check_menu.mjs --quick`: all groups passed, 0 problems.
+- `bin/test-pure.mjs`: all passed (firmware facts 277/277, purity 256/256).
