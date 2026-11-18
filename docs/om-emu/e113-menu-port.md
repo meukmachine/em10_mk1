@@ -2006,3 +2006,31 @@ request ids: resize, trimming, colour, red-eye, shadow, e-Portrait, aspect, RAW 
 The lab runs no edit; finishing the request would report a file never written. Doing it for real needs
 the play module native plus the image library's edit kinds (`playmod.mjs` is E143-only and only decodes
 a view). That is a feature the emulator lacks on every body, not an E113 port gap.
+
+## Session 2026-11-18i — full gate (`bin/test.mjs`) with all 20 bodies
+
+User: "find the firmware yourself. The laptop has 16GB." JPEG Edit save: declared out of scope by the
+user (emulator-wide missing feature).
+
+- **Firmware:** `node emu/bin/fetch-fw.mjs --model <CODE>` downloads from the vendor's updater API,
+  checks the pinned hash and unpacks. Fetched E147 E148 E139 E134 E137 E142 E140 E125 E145 E133 E130
+  E129 E132 E118 E122 — all rc 0, so all 20 bodies of `models.mjs` are in `unpacked/`. Needs ~2.2 GB;
+  the disk was 100 % full, freed by deleting this session's walk snapshots (`*.raw`, 3.6 GB) from the
+  scratchpad.
+- **Run 1** (`OM_FW_DIR=$PWD/../fw NODE_OPTIONS=--max-old-space-size=5500 node bin/test.mjs`, alone,
+  11:59 → 14:55, about 2 h 56 min): ran to its end, no memory kill (available RAM stayed 2–5 GB).
+  98 result lines, **`FAILED (8)`, all eight in one line: firmware facts 1590/1598**. Everything else
+  passed, among it on E113: playinfo 21/21, erase 31/31, touch 11/11; on E120: 21/21, 3/3, 27/27.
+  Three lines `SKIPPED` by the gate itself (they want `OM_CADUCEUS` = a caduceus-om3 checkout, a
+  separate project; E147 only).
+- **The 8 failures = this branch's fault, invisible until the other bodies were unpacked.** The fact
+  rules added for E113 (`myset_load`, `mic_monitor`, `acc_ring`, `body_version`; on E118 also
+  `strobe`, `mode_dial`, `erase_named`, `wifi_manager`) also read on E134 E125 E133 E130 E129 E132
+  E118 E122, whose stored `FACTS` lines in `ports.mjs` predate them; the facts test compares stored
+  with read on every unpacked body. Fixed (om-emu `7d49c55`) by rewriting those eight lines from the
+  readers' own output (script checked first that re-emitting the stored value reproduces the old line
+  byte for byte). `test_facts` 1598/1598. E118 and E122 rechecked: playinfo 21/21, erase 3/3 and
+  35/35, touch 16/16 and 26/26, modelcheck rc 0; E125 touch 23/23.
+  **Lesson:** a new fact rule must be checked on every body, not only the three unpacked ones — keep
+  all 20 unpacked.
+- **Run 2** started after the fix; result below when it ends.
