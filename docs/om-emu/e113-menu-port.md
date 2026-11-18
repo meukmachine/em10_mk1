@@ -1308,3 +1308,70 @@ All om-emu work is on branch `e113-port` of `research/om-emu-src` (gitignored he
 ### Regression after S-BODYVER (om-emu `89b0c55`, 2026-11-18)
 - `test:pure`: all passed (SCPU 15/15, firmware facts 278/278, purity 256/256).
 - `bin/modelcheck.mjs E113`: tft ok, evf ok. `bin/modelcheck.mjs E120 --no-port`: tft ok, evf ok.
+
+## Session 2026-11-18d — Connection to Smartphone (Wi-Fi wizard), S-WIFIMGR
+
+### Walks before the fix
+- `p1` (clean): Playback Menu opens; rotate On/Off popup works; Edit / Print Order / Reset Protect greyed with an
+  empty card; Shooting Menu 2 drive list and Image Stabilizer page fine.
+- `p2`: `s1,s2` stores a picture (playback shows "001-0000", frame 1, 2014.01.01); OK in playback opens the JPEG
+  popup. **Open issue A:** Playback Menu's Edit / Print Order / Reset Protect stay greyed even with that picture on
+  the card. Not investigated.
+- `p2` **Wall:** Playback Menu → Connection to Smartphone: wizard pages 1/3 and 2/3 fine, third OK →
+  `unserviced inter-CPU doorbell: pending [0,1,0,0]`.
+
+### Analysis (E113 disassembly addresses)
+- Doorbell write `mov d2,(0x99300308)` at `0x5003350a`, inside the common cross-CPU request `0x500334c8`
+  (d0 object id, a0 request slot; id bits `0x7000` pick the CPU: `0x1000` CPU1, `0x2000` CPU2, 0 CPU0). Seven
+  wrappers call it; here OlyQeWrCpu `0x5003302a` (via the generic queue write `0x50030409`) and OlyEvStCpu
+  `0x500330ec` (via `0x5003004e`).
+- Sender = `wifi_mngr_start` `0x50d76631` (logs "Error : wifi_mngr_start"), called from
+  `api_network_Start_In_Wlan_Communication`. It sends a 16-byte command `{0,0,1,ptr config}` to queue `0x1005`
+  (CPU1) and sets pattern 1 of the manager's flag. Config holds SSID and password. `wifi_mngr_stop` `0x50d766f9`
+  sets pattern 2. So the Wi-Fi manager task lives on CPU1, which the lab does not run; upstream models no radio on
+  any body (`docs/a53-spec.md`: "stub as absent").
+- api_network init (`0x502063c9`) registers eight callbacks at `0xa0a67c90..ac`; each posts one GUI event
+  `0x041c0001..8` through `0x5002028f(event, arg, 0)`:
+  `0x502062f0` (sets started word `0xa0a67cb0`=1, event 1), `0x5020630f` (2), `0x50206328` (3),
+  `0x50206341` (clears started word, event 4), `0x5020635f` (5), `0x50206378` (6),
+  `0x50206391` (stores Last_Err `0x6044acf4`, event 7), `0x502063b0` (8).
+
+### Experiments (probe hooks, one walk each)
+| run | what | result |
+|---|---|---|
+| p4 | both CPU1 requests answered 0, nothing else | "Wi-Fi Starting" forever, MENU/OK ignored — **dead end** |
+| p5 | requests answered `0xffffffff` | same; return value is ignored — **dead end** |
+| p7 | + error callback `0x50206391(1)` | still "Wi-Fi Starting" — **dead end** |
+| p8 | + callback 0 `0x502062f0(0)` | page 3/3: SSID `E-M10-P-00000001`, password, "End Wi-Fi MENU"; MENU → "Wi-Fi Stopping" forever |
+| p9 | p8 + callback 1 `0x5020630f(0)` after stop | still "Wi-Fi Stopping" — **dead end** |
+| p10 | p8 + callback 3 `0x50206341(0)` after stop | wizard leaves, shooting screen, menu usable again |
+
+Harness note: pointer-called functions have no call-site frame; `lab.call(fn, regs, null, [0, 0], limit)`.
+
+### Fix — S-WIFIMGR (om-emu, E113 + E120)
+- Fact `wifi_manager {send, start, stop, started, stopped}` (`src/fw/facts.mjs wifiManager`): start function found
+  from the "Error : wifi_mngr_start" load; the flag-set call sites by `mov 1|2,d1; exth d0; call` (stop = function
+  after start); send = call before start's flag set (`mov -1,d1`); callbacks by event loads `0x041c0001` /
+  `0x041c0004` with the `add -4,sp; mov d0,d1; mov 1,d0 | clr d0; movhu` head. E113
+  `{0x50d766c4, 0x50d766d4, 0x50d76721, 0x502062f0, 0x50206341}`, E120
+  `{0x50e1685e, 0x50e1686e, 0x50e168bb, 0x502ad502, 0x502ad553}` (E120 hand-edited in ports.mjs, same reason as
+  before). E143: callbacks have another shape → no fact, untouched.
+- Lab (`camapp.mjs _install_wifi`, `pump()`): the three cross-CPU calls are stepped over with 0; pump then calls
+  api_network's own callback with 0 — started after a start, stopped after a stop — and settles.
+- **This is a stand-in, not a radio.** No AP exists, nobody can connect, the other six callbacks never come. That a
+  real manager answers start with exactly callback 0 / arg 0 is inference; the pairing is from the walks above.
+  SSID shown is the firmware's own (serial-less lab NVRAM), password from firmware.
+- Verified: walk `q1` on the plain build — wizard 1/3, 2/3, 3/3, End Wi-Fi → shooting screen; menu; wizard again,
+  Cancel on 1/3; wizard again to 3/3, End Wi-Fi; playback ("No Picture"). rc 0, no errors.
+
+### Observation: mode becomes iAUTO after the wizard (open issue B)
+After End Wi-Fi the shooting screen shows iAUTO (was P), and the menu greys what iAUTO greys (Picture Mode,
+Bracketing, HDR, …). Likely not Wi-Fi-specific: E113 has no `mode_dial` name table (fact `mode_dial {table: null}`),
+so the lab's idle dial image sits at position 0 while the start screen is P; upstream documents the same mismatch
+on E143 (application reconciles to the dial at a later event). Hypothesis only — not verified which E113 dial
+position is P.
+
+### Regression after S-WIFIMGR (om-emu `54f2550`, 2026-11-18)
+- `test:pure`: all passed (firmware facts 278/278, purity 256/256).
+- `bin/modelcheck.mjs E113`: tft ok, evf ok. `bin/modelcheck.mjs E120 --no-port`: tft ok, evf ok.
+- E120's wizard itself not walked (fact + modelcheck only).
