@@ -1838,3 +1838,84 @@ sensor model), and no busy bar was seen between OK and the page (frames are per 
 **Still open vs the session goal:** `checks/*` are E143-only; full `bin/test.mjs` needs ~20 bodies' firmware
 (only E113/E120/E143 unpacked) and was memory-reaped; JPEG Edit save = lab-wide refusal; row sweeps were
 open+cancel, not every value committed; E120 Recording Volume popup E14 and E120 Myset recall unverified.
+
+## Session 2026-11-18g — all standalone tests, regressions fixed, commit sweep, Level Adjust (S-ACCRING)
+
+### Every test file run standalone, one process at a time (om-emu `17859c3` → `1a82faf`)
+
+`bin/test.mjs` in one go is memory-reaped on this machine, so each `test/*.mjs` was run as its own process
+(scratch driver, serial). Golden body E143: 76 runs, 72 rc 0. The four others:
+
+| test | result | cause |
+|---|---|---|
+| test_host (pl8b "200 touch moves: 0 samples") | FAIL → **fixed** | regression from this branch, see below |
+| test_nvram | rc 1 first run, rc 0 on rerun (8/8 + 34/34) | first run died without a test line; not reproduced |
+| test_take_ready | FAIL | needs the E143 sub-CPU block (blk0e560000), not in the unpack here |
+| test_unpack | SKIPPED rc 3 | needs OM_FW_DIR (original containers) |
+
+Per-body runs (rc 0 unless said): E113 storage --session 43/43, --hls, playinfo 21/21, erase 31/31, touch
+11/11. E120 storage 70/70, --hls, playinfo 21/21, erase 3/3, touch 27/27. E144 storage 53/53, playinfo
+20/20, erase 31/31, touch 27/27. E146 c3take 7/7, scpu 105/105+20/20, hdmi, storage 66/66, slot2 22/22,
+nvram, lens, scpum4, playinfo 20/20, erase 31/31; **E146 test_touch rc 1 — also fails on the parent of the
+branch (pre-existing, not chased).**
+
+After the fixes (om-emu `1a82faf`): test_touch E143 7/7, E113 11/11, E120 27/27, E144 27/27; test_camapp
+E143 all groups; test_regress 5/5; test_lab 23/23+3/3; test_host 11/11; modelcheck E113 ok, E120/E144/E146
+`--no-port` ok; test:pure all passed.
+
+### Two regressions this branch had brought to other bodies (om-emu `1a82faf`)
+
+1. **Optional facts read with `fact()`** — strobe / myset_load / mic_monitor / wifi_manager / body_version
+   throw on a ported body that lacks them (E146 start crashed). All read through `factIf()` now.
+2. **E143 touch read length** — bisected to `0b8febc`: the E113 touch correction had turned E143's read
+   length into a fixed count (`touchReadConst`). E143 takes it from register a1. Restored
+   (`TOUCH_ARGS_E143 = { write_len: {sp: 20}, read_len: {reg: 'a1'}, read_addr: ['d1'] }`), const rule removed.
+
+### JPEG Edit save — design boundary, not an E113 gap
+
+The lab refuses the edit's save on the golden E143 as well (no image pipeline for the re-encode). Left.
+
+### Commit sweep of the whole Custom Menu (driver `commit-sweep.mjs`)
+
+For each row: RIGHT (open), DOWN (change the value), OK (commit), then MENU until the frame is back near
+the page. Rows 0–89: all commit and return, 67 with a visible value change on the page, 9 need one or two
+MENU presses (sub-pages). **Row 90, K → Level Adjust → Adjust → OK: menu lost** — a real fault, below.
+
+### K → Level Adjust froze the menu: accelerometer sample ring (S-ACCRING)
+
+Chain (disasm addresses): GUI OK → LevelCtrl::calibration → OlyHfwOpeLevel::calibration 0x506ad822 →
+rotation getter 0x50212577 → API 0x501f819d (d0 = 1, d1 = rotate 0xb) → driver 0x5005a253 → worker
+0x50045460 → sample loop 0x50045a05: 100 samples through reader 0x5004457a, which polls 0x500447ea and
+sleeps 16 ms (0x50030962) while it answers 1 = no new sample. Nothing fills the ring in the lab (the
+sampler needs the sensor's SPI transfer, "[acc_spi]"), so the GUI task (152) polled for ever.
+
+Data: client table 0x6055fc54 (12-byte entries, read index byte at entry−3), ring 0x6055fc78 (32 × 16 B,
+four words), write-index byte 0x6055fe78. E143/E144's accelerometer (src/lab/acc.mjs) is another, newer
+module — not reusable.
+
+**Fix:** fact `acc_ring { poll, index, ring }` (rule `accRing`, byte form of the poll function; matches
+E113 **and E120**: poll 0x50057ea9, index 0x616dc3fc, ring 0x616dc1fc) + **S-ACCRING** in camapp.mjs: before
+each poll one new all-zero sample is stored and the write index advanced.
+
+**Verified (E113, per-key frames):** Adjust → OK: trace `OlyHfwOpeLevel::calibration rotate=11 result=0`, no
+lab error; Reset → OK likewise. After either OK the camera shows the **shooting screen**, not the K page;
+MENU then opens Shooting Menu 1 and the menu navigates normally.
+
+**Not known:** whether the real body also leaves the menu after Level Adjust (not chased in the GUI code);
+what a level camera's sample is in this module's units (zeros are an inference, the calibration accepts
+them); the level gauge on the shooting screen has no model on E113.
+
+**Dead ends / traps:** OM_HOOK takes disasm addresses and only function entries fire reliably (mid-function
+hooks never did); without per-key snapshots (OM_EACH) the key timing differs and the OK was not delivered —
+walk with OM_EACH=1; the fact test compares key ORDER, so a new fact must sit in ports.mjs where readFacts
+emits it.
+
+**Committed:** om-emu `5744328`. Regression on it: test:pure all passed (facts 450/450, purity 256/256);
+modelcheck E113 tft+evf ok; modelcheck E120 --no-port tft+evf ok; test_touch E113 11/11, E120 27/27.
+Commit sweep of the three K rows after Level Adjust (Touch Screen Settings, Eye-Fi, Electronic Zoom Speed):
+all three open, commit and return to the page (only the first shows a changed value on the page).
+E120 Level Adjust itself was not walked (fact + stand-in installed, modelcheck clean).
+
+**Still open vs the session goal:** full `bin/test.mjs` in one process (memory; ~20 bodies' firmware absent);
+`checks/*` E143-only; JPEG Edit save (lab-wide); E120 Recording Volume popup E14; E120 Myset recall and E120
+Level Adjust unwalked; E146 test_touch pre-existing failure; test_take_ready/test_unpack need files not here.
