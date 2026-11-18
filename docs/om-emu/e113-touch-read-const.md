@@ -1,5 +1,17 @@
 # OM-Emu E113 — the touch-panel read length is a constant, not register `a1`
 
+> **CORRECTION 2026-11-18 (later the same day) — the E113 half of this document is WRONG.**
+> On E113 the read length is **not** the constant 4. In `0x5022ba06` the tail `mov 4,d0; mov 1,d1; call …` is the
+> count of bytes **sent** (the register address phase), not the read length. The read length is a 32-bit word the
+> caller passes on the stack — callee `sp+0x24`, the caller's `(4,sp)` — and the register address is two bytes
+> `[d1, a1]`. Evidence: with `{ const: 4 }` `test/test_touch.mjs` on E113 scored 6/11, the HFW layer saw 1320,3840
+> for a tap at 40,333 (every read truncated to 4 bytes). With `touch_args: { read_len: { sp: 0x24 }, read_addr:
+> ["d1","a1"] }` it scores 11/11 (om-emu `2edea9d`). `touchLength` in `src/fw/facts.mjs` now returns `{ sp: N }`
+> when the read helper has exactly one 32-bit stack load above its frame, before trying `touchReadConst`;
+> `touchAddr` returns `['d1','a1']` for that shape. The `a1`-is-not-a-length observation and the crash analysis
+> below still hold; the "constant 4" reading of E113 is the dead end. The E143 `{ const: 5 }` claim was not
+> re-examined. Details: `e113-menu-port.md`, section "Per-body tests on E113".
+
 Scope: OM-Emu HLE lab, the touch-panel I2C register-read stand-in. This documents a measurement
 trap in the auto-port's `touch_args.read_len` fact, the `{ const: N }` shape that fixes it, and the
 `touchReadConst` detector that now derives it automatically. The fix **is applied** (E113's

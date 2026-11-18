@@ -1532,3 +1532,65 @@ the row has one.
 - Tests: `npm run test:pure` 278/278; `modelcheck E113` ok tft+evf; `modelcheck E120 --no-port` ok tft+evf.
   `checks/*` are E143-only by construction and do not run for E113. `modelcheck E143` fails on the parent commit
   too (pre-existing). Full `bin/test.mjs` was OOM-reaped on this 3.4 GB machine and was not rerun.
+
+## Session 2026-11-18d — per-body tests on E113, remaining menu walks
+
+### Per-body tests on E113 (om-emu `2edea9d`)
+`bin/test.mjs` lists bodies per test; E113 was in none of the per-body lists. Added and run one at a time
+(`OM_EMU_MODEL=E113 node test/…`):
+
+| test | result | what it needed |
+|---|---|---|
+| `test_storage.mjs --session` | 43/43 | E113 in `MOVIE_ZERO` (see below) |
+| `test_storage.mjs --hls` | 21/21 | nothing |
+| `test_playinfo.mjs` | 21/21 | nothing |
+| `test_erase.mjs` | 3/3 | E113 in `ERASE_DIALOG` |
+| `test_touch.mjs` | 11/11 | touch read facts, `post_preempts`, `START_PANEL` |
+
+- **Touch read length (fact was wrong).** Controller slave 0x48, read fn `0x5022ba06`. The read length is the
+  32-bit word at callee `sp+0x24` (caller's `(4,sp)`), the register address is two bytes `[d1, a1]`; the
+  `mov 4,d0` in the tail counts bytes *sent*. Old fact `{ const: 4 }`/`["d1"]` → reads truncated to 4 bytes, HFW
+  saw 1320,3840 for a tap at 40,333, test 6/11. `facts.mjs` `touchLength` now returns `{ sp: N }` when the read
+  helper has exactly one 32-bit stack load above its frame; `touchAddr` returns `['d1','a1']` when the third
+  instruction is `mov a1,a2`. `e113-touch-read-const.md` carries a correction note.
+- **`post_preempts` (models.mjs, E113).** E113's kernel has 16 priority levels, lab task = nav task = 14, the GUI
+  task (1..13) preempts the lab during `sendEvent`. `nav.mjs` threw "GUI ran during post"; the guard is now
+  skipped on `post_preempts` bodies and the post stub budget is the settle budget (140 was exceeded:
+  "more than 140 stub calls").
+- **`START_PANEL` (test_touch).** The E113 lab starts on the Super Control Panel, there is no touch-mode icon at
+  the tapped pixel, so the tap must leave the frame unchanged; the test checks that instead.
+- **Erase.** Delete opens the erase dialog; Yes sends eraseCurrent (play request 21), which the lab refuses: E113
+  has no native erase fact (not in `ERASE_NATIVE`). The dialog is tested, the erase itself is **not emulated**.
+  Dead end: putting E113 in `ERASE_YES_UNTIMED` (claims Yes sends nothing) → playinfo 20/21, reverted.
+- **Movie remaining time.** `0x504cd2c6` is a record getter of the movie module (`0x504e20fd` copies 3 words + a
+  halfword), all zero with no movie recorded → `MOVIE_ZERO`. Where the screen's `00:43:15` comes from is not read.
+- Regression after these changes: `test:pure` 278/278; `modelcheck E113` ok tft+evf; `modelcheck E120 --no-port`
+  ok tft+evf; `test_touch` E120 27/27; E143 `checks/check_kernel.mjs` all groups passed; E143
+  `checks/check_menu.mjs --quick` all groups passed (0 problems).
+- `modelcheck E143`: `bin/modelcheck.mjs` excludes E143 by design (filter `k !== 'E143'`; its own comment calls the
+  PLANC 0xb2 / highlight-block registers unobserved "on E143 too"). Forced with `--no-port` it reports
+  FEATURE_UNOBSERVED ch2 0x48c / PLANC_UNOBSERVED ch1 0x62c. Not an upstream test, not an E113 regression.
+
+### Walks `f1`–`f5`, `g5` (TFT, rc 0, EV [] LOG [])
+- `f1` JPEG Edit: popup `JPEG` → **JPEG Edit** → list Shadow Adj / Redeye Fix / crop / Aspect / Black & White /
+  Sepia (scroll bar; more below) → Redeye Fix → Yes/No. **Yes stops**: `S-PLAYSEQ: play request 164
+  (EditRedEyeAdjust::save) saves an edit's file; the lab runs no edit` (om-emu model-survey finding 141). That
+  refusal is lab-wide (no body runs an edit), not an E113 gap; the menu path up to the commit works.
+- `f2` Print Order: page (single / ALL) → ALL → No / Date / Time → Set / Cancel → **Set** returns to the Playback
+  Menu; Print Order opens again afterwards; MENU exits.
+- `f3`/`f4` Myset: Myset1 → Set → row shows **Set**; OK on a stored Myset → Yes/No → **Yes** returns to
+  Shooting Menu 1; MENU exits to the SCP.
+- `f5` Myset recall with a changed value: Myset1 Set (aspect 4:3), Image Aspect → 16:9 (popup shows pixel counts
+  4608x2592 …, stored, SCP shows 16:9), Myset1 recall Yes → Image Aspect **still 16:9**.
+  `g5`: identical key list on **E120** → identical result (still 16:9). So this is not an E113 port fault; whether
+  the firmware excludes Image Aspect from Myset or the lab's settings store drops the recall is **not determined**
+  (the lab has no Myset code at all; no refusal is logged). Open.
+
+### State of the session goal (honest, end of 2026-11-18d)
+- Menu: all tabs and Custom A–K walked, plus JPEG Edit list, Print Order to its final Set, Myset set + recall.
+  No menu row found that faults on E113. Limits: edit save (lab-wide refusal), erase (not emulated on E113), Myset
+  recall effect unproven (same on E120), Image Overlay / RAW Data Edit grey (JPEG stand-in picture), not every
+  row's popup opened individually.
+- Tests: everything that can run for E113 runs and passes (table above + pure + modelcheck). `checks/*` pin E143
+  and cannot run for E113. Full `bin/test.mjs` (all ~19 bodies; only E113/E120/E143 firmware is on disk, and it
+  was memory-reaped on this 3.4 GB machine) was **not** rerun.
