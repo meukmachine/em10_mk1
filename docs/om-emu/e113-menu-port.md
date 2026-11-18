@@ -1919,3 +1919,77 @@ E120 Level Adjust itself was not walked (fact + stand-in installed, modelcheck c
 **Still open vs the session goal:** full `bin/test.mjs` in one process (memory; ~20 bodies' firmware absent);
 `checks/*` E143-only; JPEG Edit save (lab-wide); E120 Recording Volume popup E14; E120 Myset recall and E120
 Level Adjust unwalked; E146 test_touch pre-existing failure; test_take_ready/test_unpack need files not here.
+
+## Session 2026-11-18h — E120: every value popup was frozen (Timer2), Recording Volume popup, remaining tests
+
+om-emu commit `03a0005` (branch e113-port, not pushed). Scratch walks `v5`…`w5`.
+
+### Tests that needed files, now run (E143)
+- `OM_FW_DIR=$PWD/../fw node test/test_unpack.mjs` → unpacker **18/18**, rc 0 (the containers are in
+  `research/om-emu-src/fw`; the test only needs the variable).
+- `test_take_ready` → rc 0 (9/9, 16/16, 24/24) once the E143 sub-CPU block
+  `OLY_E_143_1900_0000_0000.BIN.blk0e560000.OE.0107.bin` is in `unpacked/E143` (extracted with
+  `tools/olyfw.py --dump`; sha256 matches `models.mjs`). Gitignored, like all firmware.
+- E146 `test_touch` fails identically on a clean worktree of the upstream merge base `18a8162`
+  (`PlayError composite NONE UNWRITTEN pc 0xa2100400 ch 2 off 0x04e0`) → upstream, not this branch.
+
+### E120 Recording Volume popup — three separate faults
+1. **`GDB m435f434e,1: E14` = wrong ported IPI descriptor table.** `PlayLab.ipi_desc` read the ring
+   descriptor at an address the automatic port got wrong (E120 map: `0x60092cd4 → 0x6009bbe1`). The true
+   table is the immediate in E120's IPI_POST `0x5005077b` (`udfu01 48,d1; add 0x6009d1f8,a0`; 3 CPUs ×
+   16 B rows). Fixed in `ports.mjs`: `0x60092cd4 → 0x6009d1f8`, `0x60092cf4 → 0x6009d218`,
+   `0x60092dd4 → 0x6009d288`. The last two are **derived** (+0x20, +0x90 as on E143), not read from
+   code; the +0x20 one is exercised by S-CPU2's reply and works.
+2. **"S-CPU2: not the allow-listed post".** The popup's level meter posts a function to CPU 2. E120's
+   is `0x50e5e25f` (sets flag `0x60041300` pattern 4 for the CPU 2 task loop `0x50e5ea1e`); the task's
+   pattern-4 arm at `0x50e5ec39` is the same service as E143's command 3: if `(0x61b8c810) == 0` copy
+   7 words `0x61b8c830 → 0xa1c4ce5c`, word `0xa1c51ab0 → 0xa1c4ce74`, then IPI-post the reply function
+   to CPU 0 (`0x50e5eca2`). So the existing stand-in fits; only the function's map entry was missing
+   (`0x50aaa173: null`). Fixed: `0x50aaa173 → 0x50e5e25f`. **Trap:** the block already held a
+   `0x50aaa173: null` key later in the same object literal, which silently overrode a first insert.
+3. **Storm on OK = no GUI timer at all on E120.** After 1+2 the popup opened and UP moved the slider,
+   but OK stormed (`event storm … GESetEvent`, 0x9c01 reposted). Lock 2 (E120 `0x615f3fb4`) = `0x9ac6`
+   and stayed so for seconds. The GUI timer table (10 × 28 B at `0x615e…`, set fn `0x5090dbfb`, start
+   wrapper `0x50a4d067(d0=522, d1=10)`) held the timer armed, but the tick's ms clock
+   `0x615e6b88/8c` was **0 for the whole session**. A control walk showed it was not mic-specific:
+   **no value popup on E120 ever closed on OK** (Movie mic On→Off stayed open, later keys dead).
+   Cause: `board.timer2` was an E113-only fact ("the family's other bodies have the unit but their
+   IRQs are not read"). Read them: E120 channel table run-time `0x60026750` and mask table
+   `0x60116b88` (named by the start routine `0x50065990`, the byte-twin of E113's `0x50051072`) are
+   **identical in layout to E113's** (0x9b800010 + 12n, IRQ 24 for ch 0–9, 25–29 for 10–14; status
+   `0x9b8000c4`, IE `0x9b8000dc`). Fixed: same `timer2` fact on E120's board (`hz` 16384 is the same
+   inference as on E113).
+
+**Verification (walk `w2`, TFT, NOERR, sheet viewed):** Movie mic On → Off commits; Recording Volume
+popup opens with L/R meter, UP UP → +2, OK → list shows +2; reopen, DOWN → +1, OK → +1; MENU out and
+back in keeps it. Walk `w5`: Exposure Shift page, Level Adjust → Reset → OK (goes to the shooting
+screen, as on E113), Warning Level −1 commit and back to ±0, all NOERR.
+
+**Dead ends:** varying S-MICMON's delay (120 ms … 1.5 s, and the stop note alone 1 ns … 60 s) — the
+storm only moved; hooking for the awaited event with E113's lock addresses on E120 (meaningless, the
+words are per body: use the map of E143 `0x603710f8`).
+
+### What live timers changed on E120 (all followed up)
+- **Auto-ISO value blinks** on the shooting screen (`ISO-A LOW`, firmware blink, same as noted for
+  E113's EVF). `bin/modelcheck.mjs`'s INFO cycle compared whole frames at a press's end and no longer
+  found its start frame ("info did not bring the screen back to its frame in 8 presses"). Now it
+  compares on the pixels stable through the probe's window (6 frames, 300 ms apart). E120 and E113
+  modelcheck: tft + evf ok, cycle 4 × INFO.
+- `test_touch` E120 EVF "frame unchanged" check hit the other blink phase (26/27). The check now
+  accepts the earlier frame coming back within 1.5 s; a frame a tap really changed does not come
+  back. E120 27/27, E113 11/11, E143 7/7.
+- **Erase dialog Yes now sends eraseCurrent** on E120 (upstream's `ERASE_YES_UNTIMED`, finding 155,
+  was exactly the dead timer). E120 has no erase fact, so S-PLAYSEQ refuses request 21 — the honest
+  outcome. E120 removed from the set; `test_playinfo` E120 21/21, `test_erase` E120 3/3.
+- Also rerun on `03a0005`: `npm run test:pure` all passed (facts 450/450, purity 256/256);
+  `test_storage` E120 70/70 (+ `--hls` rc 0).
+
+### Still open vs the session goal (unchanged, stated plainly)
+- Full `bin/test.mjs` as one process: not run. It imports every test into one node process (OOM on
+  this 3.4 GB machine, reaped once) and needs ~20 bodies' firmware, of which five are here. Every test
+  file was run standalone instead.
+- `checks/*` pin E143 notes and addresses: E143-only by design, not runnable for E113.
+- JPEG Edit **save** is refused by the lab on every body, E143 included (S-PLAYSEQ refuses the edits'
+  saves; the save path is the image pipeline, not menu code).
+- E146 `test_touch`: upstream failure (above).
+- E120 native erase (no `erase` / `erase_named` fact matches E120).
