@@ -1432,3 +1432,14 @@ position is P.
   (RIGHT): orange caution page, Yes/No; **Yes + OK** returns to the list, no fault.
 - Note for walkers: on these pages OK = "Set" (leave page), RIGHT opens the row. Several earlier sequences drifted
   on that.
+
+### Walk `r10` — EVF (800x600), 32 keys, rc 0, EV [] LOG []
+Sheet built with an 800x600 variant of the sheet script (`sheet3.py`; `sheet2.py` only takes 720x480 frames).
+- Tab column: Shooting 1 → Shooting 2 → Playback → Custom → (up) Setup, all drawn on the EVF.
+- Custom Menu A–G list; D. Disp/PC page; Video Out NTSC → **PAL stored**; F. Flash Custom page (X-Sync 1/250, Slow Limit
+  1/60).
+- Setup Menu → Firmware page: `Body : 1.4`.
+- MENU exits to the EVF shooting screen (P, 4000, exposure bar, 2099 shots).
+- Oddity, not chased: after the second menu exit the EVF shooting screen shows an extra "ISO-A LOW" mark that was
+  not there after the first exit.
+- Playback Menu greying (issue A) is the same on the EVF.
