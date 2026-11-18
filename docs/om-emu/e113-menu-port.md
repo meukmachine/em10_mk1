@@ -1493,3 +1493,17 @@ note: E120 does NOT share issue A, it has `rec_native: true`.)
   exits, PLAY shows `001-0000`, MENU opens again.
 - Limits: verified on E113 only; the offsets 28/32 and the command number 5 are E113 observations placed in the
   shared library fact, other bodies of the family not checked.
+
+### Walks `c1`, `c2` — Custom Menu A, B, C, E, G, H, I (rc 0, EV [] LOG [], sheets viewed)
+- A. AF/MF: page of 7 rows; Full-time AF Off → **On stored**.
+- B. Button/Dial: Button Function page (Fn1 AEL/AFL, Fn2 Multi Function, REC, arrow pad, L-Fn AF Stop); Mode Dial
+  Function greyed.
+- C. Release: Rls Priority S Off → **On stored**; L fps 3.5, H fps 8.
+- E. Exp/ISO: EV Step 1/3EV → **1/2EV stored**.
+- G. Color/WB: Set page (image-quality slots 1–4, Pixel Count Large → Middle on the cursor slot).
+- H. Record/Erase: Quick Erase Off → **On stored**.
+- I. Movie: Mode P → **A stored**.
+- Also seen in `c1`: outside the menu DOWN opens the drive strip (Single / Sequential H / L / 12 sec / 2 sec), OK
+  commits (SCP shows the 2s self-timer).
+With D, F (r10), J, K (earlier walks) every Custom Menu letter A–K has now been opened and a value changed where
+the row has one.
