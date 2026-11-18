@@ -1225,3 +1225,86 @@ instead and MENU no longer backed out. Same storm on E120 (walk `xE120`) — fam
 - `bin/modelcheck.mjs E120 --no-port`: tft ok, evf ok (rc 0) — E120 unaffected (no `timer2` board fact).
 - E143 `checks/check_kernel.mjs`: all groups passed. `checks/check_menu.mjs --quick`: all groups passed, 0 problems.
 - `bin/test-pure.mjs`: all passed (firmware facts 277/277, purity 256/256).
+
+## Session 2026-11-18c — card FS/Format, Reset, flash-mark palette, firmware version, more walks
+
+All om-emu work is on branch `e113-port` of `research/om-emu-src` (gitignored here, not pushed).
+
+### Native card file system + Format (om-emu `db7cd28`)
+- E113 `card_fs` is now native (firmware's own FAT driver on the emulated card) with HLS media side by `'rule'`.
+- `fileSystem` fact: the cache-flush seam is optional — E113's free-count path has none (`cflush` null);
+  `storage.mjs` wraps it only where read.
+- `mediaHls`: E113's build names no source file, so the named-form rule found nothing. Added nameless forms; read on
+  E120 with its names ignored they give the same addresses as its named fact (cross-check).
+- `test_storage`: a press's waits now end where the media control starts — E113 formats a blank card inside one
+  600 ms press, so the old fixed wait missed it. `test_storage --hls` 21/21 on E113 and E120.
+- Card Setup → Format → Yes ends, card formatted, file read back.
+- **Dead end / trap:** `bin/port.mjs` scans every `0x[8 hex]` literal in `src/` (except `src/util`, `src/core`,
+  `src/machine.mjs`, `src/fw/`) as an **E143** address to port. A foreign-body address in `src/dev` or `src/lab`
+  silently becomes a bogus port entry. Timer2's E113 evidence therefore moved into the board fact in
+  `src/fw/models.mjs`. Never put E113/E120 addresses in `src/dev` / `src/lab` comments or code.
+- **Limit:** `bin/port.mjs E120` fails ENOENT (it needs E144's block; only E113/E120/E143 are unpacked). E120 facts
+  added since are hand-edited into `src/fw/ports.mjs` exactly as the rule reads them (`$S/bv.mjs`-style rule runs).
+
+### Reset → Yes hang (om-emu `f85842d`, S-STBREQ)
+- Symptom: Shooting Menu 1 → Reset/Myset → Reset → Yes held the GUI task forever, E113 **and** E120.
+- Cause (D): the reset writes each flash setting through the strobe module's synchronous request; its receive of the
+  strobe task's reply has no timeout; the lab never starts that task (E113 task 62, dormant). Call chain ends in
+  E113 `0x501f2cd4`.
+- **Dead end:** starting the strobe task natively (`act_tsk`) — it needs strobe hardware the lab does not model and
+  drags a new cluster in. Dropped.
+- Fix: rule `strobeRequest` (fact `strobe`) finds the request and the task-loop site by the module's two error
+  codes; stand-in answers a callback-less request 0 while the task is dormant. Task-entry search span widened
+  0x400 → 0x1000 (`STB_TASK_SPAN`): loop site is 0x1f5 past the entry on E113 but 0x7c5 on E120.
+- Verified: Reset walk strict (`c5`) on E113, `d1` on E120, no errors; settings return to defaults.
+
+### Flash mark after Reset — PAL_FIELD (om-emu `e4820eb`)
+- After Reset the SCP draws a flash mark into GUI layer 0 (OSD1) with pixel values 33, 35, 38; the kind-3 compositor
+  refused indices ≥ 32 (PAL_FIELD, model-survey finding 97).
+- Entries 1, 3, 6 = opaque black, orange, shadow → the mark's outline, body, shadow. So a pixel 32..63 now takes the
+  entry of its low 5 bits (`fold: 64`); ≥ 64 still refused. `test_vsc3` 54/54.
+- **This is an inference**, not a measured panel fact: what bit 5 does on hardware is unknown (blink? priority?).
+- Tooling note: raw frame bytes are Y,Cb,Cr,X. Old `sheet.py` showed green/purple; `sheet2.py` converts correctly.
+
+### Firmware page "Body : 0.0" → "Body : 1.4" (om-emu, S-BODYVER)
+- Page code E113 `0x5094a449..0x5094a48f`: singleton getter `0x50666295` (global `0x6044e954`, vtable
+  `0x7e3861c8`), vtable+16 → `0x5066688b` → impl `0x506c2019`, jump table at runtime `0x7e3b2ab0`:
+  item 0 (API_VERSION_BOOT) reads sysinfo struct +96; item 1 (API_VERSION_USER) reads +104 & 0xffff.
+  Page prints `%X.%X` of bits 12..15 and 8..11.
+- Struct filled by `0x50212ed1`: +96 = data object `0xC0A2`, +104 = data object `0xC082` (| d2<<16), read through
+  `0x50203bb5` → `0x500426a4`.
+- Boot (not run by the lab) writes `0xC082` at E113 `0x500f6858`:
+  `mov (0x7d991010),a1; mov 0xc082,d0; mov 0,a0; clr d1; call 0x5004277b`. E120: `0x5016c4f5`, source
+  `(0x6113f810)`, setter `0x50055c3b`.
+- **Source of the word:** runtime `0x7d991010` = image base − 0x10 = the **update container's block-0 header +0x10**
+  (`tools/omfw.py`: header `@16 ver u32`). Headers: E113 `…00140000…` = 0x1400, E120 0x1400, E143 0x1900 — the number
+  in the file name. So the 32-byte container header is mapped just below the image in flash; the unpacked block does
+  not hold it, hence 0 in the lab.
+- **Dead end:** first S-BODYVER wrote `0xC0A2`. That is the BOOT version (filled at E113 `0x500f69b8` from the last
+  word of the 1024-byte loader header at `0xa0a9cdb0`), not what the page shows. Page stayed 0.0.
+- Fix: rule `bodyVersionWrite` (fact `body_version {id, set, word}`) matches the `mov (abs),a1` + load of `0xC082` +
+  setter call; lab bring-up (`menu.mjs body_version()`, native store only) calls the firmware's setter with
+  `N<<12 | M<<8` from the model's version. E143 (lab model) untouched. BOOT version left 0.
+- Verified: walk `v2` (`menu, up, right, up, ok, ok`) shows **"Body : 1.4"**.
+
+### Walks this session (E113 TFT, rc 0, no engine/lab errors, contact sheets viewed)
+- `a1`–`a3`: Card Setup → Format, playback after format.
+- `c5`: Reset → Yes, back to SCP with defaults + flash mark.
+- `e1`: Setup menu navigation; Wi-Fi Settings submenu (Wi-Fi Connect Settings = Private, Private Password, Reset
+  share Order greyed, Reset Wi-Fi Settings); Shooting Menu 2 (drive, Image Stabilizer: Still S-IS AUTO / Movie M-IS
+  On, Bracketing popup Off/On); exit to SCP.
+- `e2`: Firmware page; date/time entry — Y/M/D/h/m/format fields all edit, OK stores, Setup shows '14.01.01 00:00.
+- `v2`: Firmware page with version.
+
+### Still not walked
+- Playback-menu actions with pictures (erase, protect, rotate, edit), Custom Menu J/K and deeper D pages, Myset
+  save/recall, Wi-Fi password screen and Reset Wi-Fi → Yes, EVF variants of this session's walks.
+
+### Test status (honest)
+- `checks/*` is E143-only by construction (pins E143 addresses/notes); it never ran against E113.
+- Full `bin/test.mjs` was started once and killed by the host for low memory (machine ~3.4 GB); not restarted.
+- `bin/modelcheck.mjs E143` fails FEATURE_UNOBSERVED / PLANC_UNOBSERVED — pre-existing upstream, not E113-related.
+
+### Regression after S-BODYVER (om-emu `89b0c55`, 2026-11-18)
+- `test:pure`: all passed (SCPU 15/15, firmware facts 278/278, purity 256/256).
+- `bin/modelcheck.mjs E113`: tft ok, evf ok. `bin/modelcheck.mjs E120 --no-port`: tft ok, evf ok.
