@@ -2043,3 +2043,6 @@ user (emulator-wide missing feature).
   `CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1`, or run the gate in a plain terminal:
   `cd research/om-emu-src/emu && OM_FW_DIR=$PWD/../fw NODE_OPTIONS=--max-old-space-size=5500 node bin/test.mjs`
   (Node 26 on PATH; ~3 h).
+- **User decision (2026-11-18): accept the current evidence, no third gate run.** Evidence = run 1
+  complete (97 of 98 lines passed in-gate; facts 1590/1598), facts fix passing standalone
+  (1598/1598), run 2's first 65 lines clean after the fix. JPEG Edit save: out of scope (user).
