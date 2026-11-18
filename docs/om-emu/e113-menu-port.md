@@ -1643,3 +1643,80 @@ tft+evf ok, E143 check_kernel all groups passed, check_menu --quick 0 problems.
 **Still open / honest state.** Full `bin/test.mjs` not rerun (memory limit); `checks/*` are E143-only;
 edit save and erase remain lab-refused; not every row popup opened; Myset recall verified on E113 only
 (E120 gets the same stand-in, modelcheck passes, no recall walk rerun there).
+
+## Session 2026-11-18f — native erase, menu sweeps, Recording Volume popup (S-MICMON)
+
+### Native erase on E113 (om-emu `eb2a7c5`)
+
+The 2014/2015 builds trace `api_picfile_*` functions by name, not by id, so the lab's `pictureErase`
+fact found nothing on E113/E120 and playback's Erase → Yes was refused by the lab. New fact
+`erase_named` places the object delete and the attribute getter from their traced name strings; model
+flag `erase_by_name` (E113 only) turns the native erase on. The DCF database knows the pictures through
+`dcf_remount`. `test_erase` 31/31 and `test_playinfo` 21/21 on E113. E120 unchanged (no flag).
+Side fixes: placed-fact key order (`erase_named` must follow the facts it reads), `FILEIF_NUMBERS`.
+
+### Row sweeps (tol-sweep driver: open every row of a page, change, commit, back)
+
+Swept without ERR/DRIFT: Shooting Menu 1 and 2, Playback Menu (with and without pictures), Setup Menu,
+Custom A, Custom B, and Custom I rows Mode / Movie mic / Movie Effect / Wind Noise Reduction.
+Inside the Custom Menu DOWN crosses page borders (A's last row → B's first), so a page-local sweep
+needs per-page key prefixes; the driver's 14-row no-wrap limit is too low for a whole-Custom sweep.
+Custom C–K rows were walked earlier (c1, c2 walks) but **not swept row-by-row** in this session.
+
+### udf06 with ±Inf (CPU, inference)
+
+A sweep trapped in the FPU-compare extension (udf06) on a −Inf operand: the emulator treated every
+non-normal as unordered. Changed: ±Inf compare in order (`ordered(v)` in `core/cpu.mjs`: normal, zero,
+or exponent all-ones with zero mantissa); NaN stays unordered. Marked (I) in om-emu
+`docs/om1-udf-spec.md` row 11 — no camera evidence, IEEE semantics assumed.
+
+### Custom I → Recording Volume: event storm, two GUI event locks, S-MICMON
+
+**Symptom.** Opening Recording Volume: `event storm: more than 810 GESetEvent calls` — key-release
+event 0x900b requeued forever.
+
+**Lock 1 (awaited-event word).** Object 0x6084999c (getter 0x50945d80), word +4 = awaited event id
+(set 0x50945d9c, get 0x50945da2, clear 0x50945da8). The generic GUI event fn 0x50991053 requeues
+every other event while the word is nonzero (post at 0x509910bb). The popup sets it to 0x9c01 at
+0x50945347 after `singleton 0x506a2d02 (obj *0x6044eb40) vt+48 = 0x506a32f3 (d0=22, a1=callback
+0x509a9a3f)` returns 0.
+
+**What 0x9c01 is.** 0x506a32f3 → 0x506be321 registers the callback (0x506330f9, d0=0x60, d1=22) and
+executes HLS transaction **13530** (ctor 0x506384d9; 13531 ctor 0x50638504) = microphone level monitor
+start / stop. The callback 0x509a9a3f maps module notifications to GUI events through a table at
+runtime 0x7e5e0344 (23 × 12-byte {module id, subtable, count}; subentries 20 bytes, event u16 @+16);
+module 22: `{0x60, 0x12e (302), type 2, 0x9c01}`, `{0x60, 0x12f (303), type 2, 0x9c01}`.
+Mic-monitor component: TRA 13530 handler 0x5079091f → 0x506c6ed1; 13531 handler 0x5079082e →
+0x506c6ce5; notifier "started" (302) **0x506c7370**, "stopped/failed" (303) **0x506c7356**
+(both entered `call fn,[],8`). E120: started 0x506ff68f, stopped 0x506ff675.
+
+**Cause.** S-TRAACK acknowledges 13530 without running the component (audio driver absent), so
+notification 302 never comes, 0x9c01 is never posted, lock 1 never clears.
+
+**Fix: S-MICMON** (om-emu commit after `eb2a7c5`; `camapp.mjs`, fact `mic_monitor` in `facts.mjs`/`ports.mjs`). At TRA
+13530/13531 the lab queues the component's own notifier (started / stopped) and calls it natively from
+the lab task. The fact finder locates the notifiers by code pattern and requires both transaction ids
+present; E143 gets no fact (stand-in inert there).
+
+**Lock 2 and the timing (second storm, on OK).** Global 0x6045e348 = second awaited event (setter
+0x5093c6c0, clearing variants 0x5093c0ac/0f3/134/174, 0x5093c6ca). In the fn around 0x5093c59d, while
+it is set: key events are dropped, all others reposted (0x5093c66c). The popup's OK handler
+(0x509458bb, event 0x900c) sets lock 2 = **0x9ac6** and starts a **100 ms timer**
+(`0x509a69e0(d0=522, d1=100)`) whose expiry posts 0x9ac6; it also stops the monitor (TRA 13531).
+With the notification delivered immediately after the step, its 0x9c01 sat in the queue and was
+reposted without end, because lab time stands still inside a step and the 100 ms timer cannot fire.
+**Dead end:** delivering the notification directly after the step (storm on OK, tally 807 reposts
+from 0x5093c691, WAIT2 = 0x9ac6). **Fix:** the notification is sent `MIC_MONITOR_NS` = 120 ms after
+the transaction, from the idle tick (INFERENCE: the real driver's latency is unknown; chosen longer
+than the popup's 100 ms hold and shorter than a key press).
+
+**Verification (walk `mv`, TFT, 31 keys, NOERR, sheet viewed).** Open popup → slider 0, L/R dB meter
+drawn; UP, UP → +1, +2; OK → list shows Recording Volume +2; reopen → +2; DOWN×3 → −1; MENU → cancelled,
+list still +2; reopen/MENU; MENU, MENU → Custom Menu → shooting screen. The level meter stays empty
+(no audio samples in the lab).
+**Not done:** E120 retest of the same popup with S-MICMON (before the stand-in E120 died there with
+`GDB m435f434e,1: E14` after GUI log `part_menu_2nd_mic_level_update`).
+
+**Regression after S-MICMON + udf06 change:** test:pure all passed (facts 278/278), E143 check_isa
+(125/125 UDF functions) and check_kernel all groups passed, modelcheck E113 tft+evf ok, modelcheck E120
+`--no-port` tft+evf ok.
