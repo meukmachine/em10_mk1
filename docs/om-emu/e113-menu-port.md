@@ -1067,3 +1067,84 @@ E113 `check_menu`/`check_kernel` unaffected (they fail earlier — see below —
 
 **State committed:** board.mjs lens pages (Wall A fault fix) + this doc. No settle faked; E143
 golden green. Walls A and B both remain open multi-session RE; neither has a shortcut.
+
+---
+
+## RESULT 2026-11-18 — E113 passes `bin/modelcheck.mjs` on TFT and EVF; menu draws and navigates
+
+om-emu commit `ef87f63` (branch e113-port, not pushed). This supersedes the "Wall A / Wall B" framing
+above: neither turned out to be the gate in the form described.
+
+### Acceptance
+
+```
+E113 (E-M10) tft: ok — start 0x108 720x480, s1 0x108, s2 0x108 1, play 0x608, info 0x60b, play 0x108,
+                       menu 0x1102, down 0x1102, menu 0x108, count at 660,444,710,469 (redrawn by 3 x INFO)
+E113 (E-M10) evf: ok — start 0x108 800x600, s1, s2, menu 0x1102, down 0x1102, menu 0x108,
+                       count at 726,556,789,588 (redrawn by 4 x INFO)
+```
+
+Run with port regeneration (`bin/modelcheck.mjs E113`, rc 0). Screens checked by eye from frame
+snapshots: Super Control Panel, Shooting Menu 1, cursor move, Image Stabilizer submenu via OK, MENU
+back out.
+
+Regressions: E120 `modelcheck` ok on both panels, `ports.mjs` byte-identical after `port.mjs E120`;
+E143 `check_kernel` and `check_menu --quick` pass.
+
+**Not covered / honest limits**
+
+- `checks/*` (check_menu, check_kernel, check_display …) are **E143-only** by construction (they pin
+  E143 notes and addresses). The acceptance test for a ported body is `bin/modelcheck.mjs`. "All tests
+  run" for E113 therefore means modelcheck, not the checks suite.
+- `modelcheck E143` fails (FEATURE_UNOBSERVED ch 2 off 0x48c / PLANC_UNOBSERVED ch 1 off 0x62c). It
+  fails **identically on the parent commit** with all E113 work stashed, so it is pre-existing in this
+  checkout and was not touched.
+- `menudata.mjs` static tables (GROUP_LIST etc., the old "Wall B") are still unplaced for E113. They
+  are only needed by E143's `check_menu` offline step; the firmware's own menu runs without them.
+- EVF path has no playback steps in modelcheck for E113 (same as the family list in modelcheck).
+
+### What was actually wrong (in order found)
+
+1. **UI_IN task 0x500f95cc was wrongly stubbed.** It is the UI input task, not a lens/FCS worker; with
+   it stubbed no key ever reached the GUI. Stub removed. (The "lens-detect SCPU retry" theory of Wall A
+   was a misread of this task.)
+2. **Settings-DB init**: the real init is 0x501d8d19, the indexed getter 0x50202f98; both needed hand
+   overrides. `db_init_saves: 0` was wrong and removed.
+3. **Shoot-count divide-by-zero**: the shots query (rule `shots-method`) is 0x502109d0 =
+   `api_rec_Calculate_MediaRemain_Ext`, called from getAvailableShootCount 0x50648485 at 0x506484b2.
+4. **Movie time record is 14 bytes on E113** (`movie_time_size: 14`); writing E143's 24 overwrote the
+   caller's return address.
+5. **Props 4013/4014** needed `any_site` (read from more than one site on E113).
+6. **Object pools**: E113 allocates GUI objects from fixed-block pools (0x60001FC0, 0x6043F400), not
+   the heap the lab scans for the shooting reactive → `object_pools` fact.
+7. **Display sync never released → blank OSD.** E113 has a third, one-channel form of the display-sync
+   API:
+   - request `api_disp_Disp_Sync_Update_Osd` 0x501fdcb1 (d0 low u16 = type; synced type 5)
+   - image sync `api_disp_Disp_Sync_Force_Update` 0x501fdf8c (compares code with 15/16/18 by
+     `cmp n,d2`, opcode 0xaa, at 0x501fdfaa..b2)
+   - sync-word setter 0x506308e9 (`mov d0,(0x6044cfc4)`)
+   - `Get_Wait_State` 0x501fdc99 sits 0x18 before the request (two "entries" near the name string →
+     the rule now takes the nearest).
+   Release = setter(0) + Force_Update(18). After it the VSC gets R030=7, R034=1 and OSD bases
+   0xbd86aa00 / 0xbd764200 / 0xbd65da00 (stride 896, height 600).
+8. **`engine.depth: 5` was a dead end** (see below).
+9. **Count probe**: E113 redraws the shooting screen on INFO like the E118 family → `PROBE_REDRAW`.
+10. **EVF event storm at POWER_ON**: getOutputDisplay 0x5087a17b enumerates TFT=4, **EVF=5** (E120:
+    5/6). The lab answered 6 → `output_evf: 5`.
+
+GUI start events on TFT: 0x9601 → 0x9b01 → 0xf001 → 0x1100.
+
+### Dead ends (do not repeat)
+
+- **Depth 5 OSD engine.** Read off fills seen while bring-up was still broken (4 bytes/pixel, 2048x57,
+  stride 8192). Once display sync is released every command is depth 3 on the 896 canvas; depth 5
+  refused all 87 start-screen commands (DEPTH x87, planes all zero, one-colour frame). `word22: true`
+  is kept (seen before the correction, not re-tested without it).
+- **"OSD errors are cosmetic"** (earlier entry) was only half right: they do not gate settle, but they
+  were exactly why nothing drew.
+- **Lens-detect / SCPU response modelling** as the settle wall: not needed.
+- **Static menu-table hunt** (immediate scan, structural scan, code xref): not needed for a working
+  menu; only for E143-style offline table checks.
+- Override format gotcha: an absent key makes `A()` return identity, silently hooking an E143 address
+  in an E113 image. Keys are always E143 0x50… addresses.
+- `$S/e143.asm` is in runtime addresses, `e113_full.asm` / `e120.asm` in 0x50… — mixing them cost time.
